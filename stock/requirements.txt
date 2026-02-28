@@ -1,0 +1,7 @@
+flask==3.1.0
+PyQt5==5.15.10
+matplotlib==3.8.2
+mplfinance==0.12.10
+akshare==1.16.79
+schedule==1.2.2
+wxauto==3.9.11.17.5

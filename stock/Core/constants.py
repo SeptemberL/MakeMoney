@@ -1,0 +1,1 @@
+DF_CLOSE = "close"

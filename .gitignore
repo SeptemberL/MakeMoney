@@ -1,0 +1,13 @@
+
+Python/Lib/__pycache__
+Python/Lib/asyncio/__pycache__
+Python/Lib/collections/__pycache__
+Python/Lib/concurrent/__pycache__
+Python/Lib/concurrent/futures/__pycache__
+Python/Lib/ctypes/__pycache__
+Python/Lib/email/__pycache__
+*.pyc
+Python/Lib/site-packages/comtypes/gen/UIAutomationClient.py
+Python/Lib/site-packages/comtypes/gen/_00020430_0000_0000_C000_000000000046_0_2_0.py
+Python/Lib/site-packages/comtypes/gen/_944DE083_8FB8_45CF_BCB7_C477ACB2F897_0_1_0.py
+Python/Lib/site-packages/comtypes/gen/stdole.py

@@ -1,0 +1,9 @@
+[
+  {
+    "id": 1,
+    "name": "日线",
+    "view_number": 1,
+    "class_name": "signal_ma",
+    "is_enabled": true
+  }
+]

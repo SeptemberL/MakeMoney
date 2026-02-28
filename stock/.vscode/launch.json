@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "运行程序",
+            "type": "python",
+            "request": "launch",
+            "program": "main.py",
+            //"program": "${file}",
+            //"cwd": "${fileDirname}",
+            "console": "integratedTerminal",
+            "args": []
+        }
+    ]
+}

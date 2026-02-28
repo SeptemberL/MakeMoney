@@ -1,0 +1,16 @@
+# tasks_config.yaml
+tasks:
+  - task_id: "task_001"
+    task_name: "每日检测白银 lof"
+    module_path: "tasks.check_lof"
+    function_name: "check_lof"
+    trigger_type: "cron"
+    trigger_args:
+      hour: 14 
+      minute: 45
+    enabled: true
+    max_instances: 1
+    misfire_grace_time: 300
+    coalesce: true
+    description: "每日检测白银 lof"
+

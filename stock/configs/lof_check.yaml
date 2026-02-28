@@ -1,0 +1,14 @@
+# lof_check.yaml
+checks:
+  - lof_check_id: "task_001"
+    lof_desc: "白银 lof"
+    lof_url: "https://q.fund.sohu.com/161226/index.shtml"
+    lof_check_warning_point: "15"
+    send_message_group: 1
+    send_message: "{fund_name} {fund_code} 当前价格 {current_price} 场外价格 {unit_nav} 溢价率 {premium_rate}% 建议申购, 每日限额 100/身份证"
+  - lof_check_id: "task_002"
+    lof_desc: "黄金 lof"
+    lof_url: "https://q.fund.sohu.com/164701/index.shtml"
+    lof_check_warning_point: "15"
+    send_message_group: 1
+    send_message: "{fund_name} {fund_code} 当前价格 {current_price} 场外价格 {unit_nav} 溢价率 {premium_rate}% 建议申购, 每日限额 5000/身份证"
