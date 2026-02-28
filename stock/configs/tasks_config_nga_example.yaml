@@ -1,0 +1,17 @@
+# 将以下任务追加到你的 configs/tasks_config.yaml 的 tasks 列表中
+# 即可让项目启动时自动开启 NGA 监控
+
+tasks:
+  # ... 你原有的其它任务 ...
+
+  - task_id: nga_monitor
+    task_name: 'NGA论坛监控'
+    # 模块路径：相对于项目根目录，nga_spider 目录必须与 main.py 同级
+    module_path: 'nga_spider.nga_monitor'
+    function_name: 'start_nga_monitor'
+    # 启动后立即执行一次，之后每 10 分钟检查一次是否还活着（监控本身内部有自己的间隔）
+    trigger_type: 'interval'
+    trigger_args:
+      minutes: 10
+    enabled: true
+    description: 'NGA帖子监控，内部按nga.yaml配置的poll_interval轮询'

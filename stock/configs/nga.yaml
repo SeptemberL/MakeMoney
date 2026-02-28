@@ -1,0 +1,36 @@
+# NGA 论坛帖子监控配置
+# 每个帖子可以独立配置监控用户和消息发送群组
+
+settings:
+  # 爬取间隔（秒），建议不低于 10 秒，避免被封
+  poll_interval: 30
+  # 请求超时（秒）
+  request_timeout: 15
+  # 请求失败重试次数
+  max_retries: 3
+
+# NGA 账号 Cookie（必填，否则无法访问登录内容）
+auth:
+  ngaPassportUid: '__填写你的UID__'
+  ngaPassportCid: '__填写你的CID__'
+
+# 监控的帖子列表
+threads:
+  - tid: 12345678
+    # 帖子备注名（仅用于日志显示）
+    name: '示例帖子1'
+    # 关注的用户 authorId 列表（整数）。为空则监控所有用户
+    watch_author_ids:
+      - 111111
+      - 222222
+    # 发送消息使用的群组ID（关联 send_message_group.yaml 里的 group_id）
+    message_group_id: 1
+    # 是否启用该帖子的监控
+    enabled: true
+
+  - tid: 87654321
+    name: '示例帖子2'
+    # 空列表 = 监控所有发言
+    watch_author_ids: []
+    message_group_id: 2
+    enabled: false
