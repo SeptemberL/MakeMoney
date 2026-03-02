@@ -79,7 +79,8 @@ def init_project():
 def setup_logging(base_dir: Path):
     """设置日志配置"""
     log_file = base_dir / 'logs' / 'app.log'
-    
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
