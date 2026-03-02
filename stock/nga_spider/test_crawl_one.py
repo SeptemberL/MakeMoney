@@ -39,6 +39,8 @@ def main():
 
     cfg = load_config(config_path)
     auth_cfg = cfg.get('auth', {})
+    settings = cfg.get('settings', {})
+    user_agent = settings.get('user_agent') or 'Nga_Official/80023'
     threads = cfg.get('threads', [])
 
     if not threads:
@@ -60,7 +62,7 @@ def main():
     logger.info('爬取帖子: tid=%s, name=%s', tid, thread_cfg.get('name', tid))
 
     nga_db.init_tables()
-    crawler = NGACrawler(tid=tid, thread_cfg=thread_cfg, auth_cfg=auth_cfg, wx=None)
+    crawler = NGACrawler(tid=tid, thread_cfg=thread_cfg, auth_cfg=auth_cfg, wx=None, user_agent=user_agent)
     crawler.crawl_once()
     logger.info('单次爬取完成')
 

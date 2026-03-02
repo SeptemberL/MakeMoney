@@ -58,6 +58,8 @@ class NGAMonitor:
         nga_db.init_tables()
 
         auth_cfg = self.cfg.get('auth', {})
+        settings = self.cfg.get('settings', {})
+        user_agent = settings.get('user_agent') or 'Nga_Official/80023'
         threads = nga_db.get_thread_configs(only_auto_run=True)
 
         # 若数据库中尚无配置，从 nga.yaml 同步后再读
@@ -72,7 +74,7 @@ class NGAMonitor:
 
         for th in threads:
             tid = int(th['tid'])
-            crawler = NGACrawler(tid=tid, thread_cfg=th, auth_cfg=auth_cfg, wx=self.wx)
+            crawler = NGACrawler(tid=tid, thread_cfg=th, auth_cfg=auth_cfg, wx=self.wx, user_agent=user_agent)
             self.crawlers.append(crawler)
             logger.info(f"已注册监控帖子: [{crawler.name}] tid={tid} (auto_run=1)")
 

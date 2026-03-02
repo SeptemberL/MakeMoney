@@ -26,20 +26,22 @@ class NGACrawler:
     """单个帖子的爬虫实例"""
 
     BASE_URL = 'https://bbs.nga.cn/read.php'
-    HEADERS  = {'User-agent': 'Nga_Official/80023'}
+    DEFAULT_USER_AGENT = 'Nga_Official/80023'
 
-    def __init__(self, tid: int, thread_cfg: dict, auth_cfg: dict, wx=None):
+    def __init__(self, tid: int, thread_cfg: dict, auth_cfg: dict, wx=None, user_agent: str = None):
         """
         :param tid:         帖子 ID
         :param thread_cfg:  来自 nga.yaml 的单条帖子配置 dict
         :param auth_cfg:    来自 nga.yaml 的 auth 节点 dict
         :param wx:          wxauto.WeChat 实例（None 则不推送）
+        :param user_agent:  HTTP User-Agent，未传时使用 DEFAULT_USER_AGENT
         """
         self.tid              = tid
         self.name             = thread_cfg.get('name', str(tid))
         self.watch_author_ids = set(thread_cfg.get('watch_author_ids') or [])
         self.message_group_id = thread_cfg.get('message_group_id')
         self.wx               = wx
+        self.headers          = {'User-agent': user_agent or self.DEFAULT_USER_AGENT}
 
         self.cookies = {
             'ngaPassportUid': str(auth_cfg.get('ngaPassportUid', '')),
@@ -114,7 +116,7 @@ class NGACrawler:
             try:
                 resp = requests.get(
                     self.BASE_URL,
-                    headers=self.cookies and self.HEADERS,
+                    headers=self.cookies and self.headers,
                     params={'tid': self.tid, 'page': page, 'lite': 'js'},
                     cookies=self.cookies,
                     timeout=15

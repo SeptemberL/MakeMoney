@@ -4,6 +4,8 @@
 # auth、settings 仍由此文件提供。
 
 settings:
+  # HTTP 请求 User-Agent（可改为浏览器或 NGA 客户端标识）
+  user_agent: 'Nga_Official/80023'
   # 爬取间隔（秒），建议不低于 10 秒，避免被封
   poll_interval: 30
   # 请求超时（秒）
