@@ -33,6 +33,11 @@ from Managers.ScanManager import ScanManager
 from stock_gatter.stockgetter_btc import StockGetter_BTC
 import csv
 
+try:
+    from nga_spider import nga_db as nga_db
+except Exception:
+    nga_db = None
+
 
 
 # 创建蓝图
@@ -506,6 +511,39 @@ def toggle_indicator(id):
             'success': False,
             'message': str(e)
         })
+
+# ─────────────────────────── NGA 监控任务 ────────────────────────────────────
+
+@bp.route('/nga_monitor')
+def nga_monitor_page():
+    """NGA 监控任务状态与开关页面"""
+    return render_template('nga_monitor.html')
+
+@bp.route('/api/nga_tasks', methods=['GET'])
+def get_nga_tasks():
+    """获取所有 NGA 监控任务（含运行状态）"""
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        tasks = nga_db.get_thread_configs(only_auto_run=False)
+        return jsonify({'success': True, 'tasks': tasks})
+    except Exception as e:
+        logger.error(f"获取 NGA 任务列表失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@bp.route('/api/nga_tasks/<int:tid>/toggle', methods=['POST'])
+def toggle_nga_task(tid):
+    """切换指定帖子的自动运行开关"""
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        new_state = nga_db.set_thread_auto_run(tid)
+        if new_state is None:
+            return jsonify({'success': False, 'message': '任务不存在'}), 404
+        return jsonify({'success': True, 'auto_run': new_state})
+    except Exception as e:
+        logger.error(f"切换 NGA 任务状态失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 # 辅助函数
 def AddMessage(message):

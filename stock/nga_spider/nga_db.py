@@ -277,3 +277,25 @@ def sync_threads_from_yaml(threads: list) -> None:
         save_thread_config(tid=tid, name=name, watch_author_ids=watch_author_ids,
                           message_group_id=message_group_id, auto_run=auto_run)
     logger.info("已从 yaml 同步 %d 条帖子配置到数据库", len(threads))
+
+
+def set_thread_auto_run(tid: int):
+    """
+    切换帖子的 auto_run 状态，返回切换后的新状态（True/False）。
+    若 tid 不存在返回 None。
+    """
+    db = Database.Create()
+    try:
+        row = db.fetch_one("SELECT auto_run FROM nga_thread_config WHERE tid = %s", (tid,))
+        if not row:
+            return None
+        current = bool(row.get('auto_run'))
+        new = not current
+        db.execute("UPDATE nga_thread_config SET auto_run = %s WHERE tid = %s", (1 if new else 0, tid))
+        db.commit()
+        return new
+    except Exception as e:
+        logger.error(f"切换 auto_run 失败 tid={tid}: {e}")
+        return None
+    finally:
+        db.close()
