@@ -36,6 +36,12 @@ from flask_socketio import SocketIO, emit
 
 from Managers.scheduler_system import TaskManager
 
+# NGA 爬虫：根据数据库 nga_thread_config 中 auto_run 开关自动运行
+try:
+    from nga_spider.nga_monitor import start_nga_monitor
+except Exception:
+    start_nga_monitor = None
+
 if platform.system() == 'Windows':
     import wxauto
     from wxauto import *
@@ -98,6 +104,12 @@ if __name__ == '__main__':
     
     # 启动调度器
     taskManager.start()
+
+    # 启动 NGA 爬虫：仅对数据库中 auto_run=1 的帖子进行监控
+    if start_nga_monitor is not None:
+        start_nga_monitor()
+    else:
+        logger.warning("NGA 监控模块未加载，跳过 NGA 爬虫启动")
 
     #stockGlobal.socketio = SocketIO(app, cors_allowed_origins="*")
 

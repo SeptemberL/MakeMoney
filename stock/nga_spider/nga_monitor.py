@@ -33,7 +33,7 @@ logger = logging.getLogger('nga_monitor')
 # ──────────────────────────── 配置加载 ──────────────────────────────────────
 
 def load_config(config_path: str = None) -> dict:
-    path = config_path or str(_THIS_DIR / 'configs' / 'nga.yaml')
+    path = config_path or str(_PROJECT_DIR / 'configs' / 'nga.yaml')
     with open(path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f) or {}
 
@@ -54,20 +54,27 @@ class NGAMonitor:
         self.crawlers: List[NGACrawler] = []
 
     def _init(self):
-        """初始化 DB 表 + 构建 crawler 列表"""
+        """初始化 DB 表 + 从数据库读取 auto_run=1 的帖子配置 + 构建 crawler 列表"""
         nga_db.init_tables()
 
         auth_cfg = self.cfg.get('auth', {})
-        threads  = self.cfg.get('threads', [])
+        threads = nga_db.get_thread_configs(only_auto_run=True)
+
+        # 若数据库中尚无配置，从 nga.yaml 同步后再读
+        if not threads:
+            yaml_threads = self.cfg.get('threads', [])
+            if yaml_threads:
+                nga_db.sync_threads_from_yaml(yaml_threads)
+                threads = nga_db.get_thread_configs(only_auto_run=True)
+            else:
+                logger.info("数据库与 yaml 均无帖子配置，跳过 NGA 监控")
+                return
 
         for th in threads:
-            if not th.get('enabled', True):
-                logger.info(f"跳过禁用帖子 tid={th.get('tid')}")
-                continue
             tid = int(th['tid'])
             crawler = NGACrawler(tid=tid, thread_cfg=th, auth_cfg=auth_cfg, wx=self.wx)
             self.crawlers.append(crawler)
-            logger.info(f"已注册监控帖子: [{crawler.name}] tid={tid}")
+            logger.info(f"已注册监控帖子: [{crawler.name}] tid={tid} (auto_run=1)")
 
         logger.info(f"共注册 {len(self.crawlers)} 个帖子的监控")
 
@@ -78,6 +85,10 @@ class NGAMonitor:
                       False = 在后台线程运行（集成到 Flask/APScheduler 时用）
         """
         self._init()
+
+        if not self.crawlers:
+            logger.info("没有配置为自动运行的帖子，NGA 监控不启动")
+            return
 
         interval = int(self.cfg.get('settings', {}).get('poll_interval', 30))
         logger.info(f'监控启动，轮询间隔 {interval} 秒')

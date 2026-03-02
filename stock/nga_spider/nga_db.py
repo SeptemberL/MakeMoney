@@ -3,6 +3,7 @@
 NGA 爬虫 数据库操作封装
 复用项目的 database.Database 连接，管理 NGA 相关表
 """
+import json
 import logging
 import sys
 import os
@@ -65,6 +66,19 @@ def init_tables():
                 last_page       INT         DEFAULT 1 COMMENT '最后爬取的页码',
                 updated_at      TIMESTAMP   DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='NGA爬取进度';
+        """)
+
+        # ── 帖子监控配置表（tid + 是否程序启动后默认运行）────────────────────
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS nga_thread_config (
+                tid                 BIGINT      PRIMARY KEY COMMENT '帖子ID',
+                name                VARCHAR(255) DEFAULT '' COMMENT '帖子备注名',
+                watch_author_ids    TEXT        COMMENT '关注的authorId列表，JSON数组',
+                message_group_id    VARCHAR(32) DEFAULT '0' COMMENT '消息群组ID',
+                auto_run            TINYINT(1)  DEFAULT 1 COMMENT '1=程序启动后默认运行监控，0=不自动运行',
+                created_at          TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
+                updated_at          TIMESTAMP   DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='NGA帖子监控配置';
         """)
 
         db.commit()
@@ -185,3 +199,81 @@ def save_progress(tid: int, last_floor_num: int, last_pid: int, last_page: int) 
         logger.error(f"保存进度失败 tid={tid}: {e}")
     finally:
         db.close()
+
+
+# ─────────────────────────── 帖子监控配置（nga_thread_config）────────────────
+
+def get_thread_configs(only_auto_run: bool = True):
+    """
+    从数据库读取帖子监控配置，返回与 nga.yaml 中单条 thread 结构兼容的 list[dict]。
+    :param only_auto_run: True 只返回 auto_run=1 的帖子（用于程序启动后自动监控）
+    """
+    db = Database.Create()
+    try:
+        if only_auto_run:
+            rows = db.fetch_all(
+                "SELECT tid, name, watch_author_ids, message_group_id FROM nga_thread_config WHERE auto_run = 1 ORDER BY tid"
+            )
+        else:
+            rows = db.fetch_all(
+                "SELECT tid, name, watch_author_ids, message_group_id, auto_run FROM nga_thread_config ORDER BY tid"
+            )
+        out = []
+        for row in rows:
+            watch_ids = []
+            if row.get('watch_author_ids'):
+                try:
+                    watch_ids = json.loads(row['watch_author_ids'])
+                except (TypeError, json.JSONDecodeError):
+                    pass
+            out.append({
+                'tid': int(row['tid']),
+                'name': row.get('name') or '',
+                'watch_author_ids': watch_ids,
+                'message_group_id': row.get('message_group_id'),
+                'enabled': True,
+            })
+            if not only_auto_run and 'auto_run' in row:
+                out[-1]['auto_run'] = bool(row['auto_run'])
+        return out
+    finally:
+        db.close()
+
+
+def save_thread_config(tid: int, name: str = '', watch_author_ids=None, message_group_id=None, auto_run: bool = True) -> None:
+    """保存或更新一条帖子监控配置（UPSERT）"""
+    if watch_author_ids is None:
+        watch_author_ids = []
+    db = Database.Create()
+    try:
+        ids_json = json.dumps(watch_author_ids, ensure_ascii=False)
+        db.execute("""
+            INSERT INTO nga_thread_config (tid, name, watch_author_ids, message_group_id, auto_run)
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                name = VALUES(name),
+                watch_author_ids = VALUES(watch_author_ids),
+                message_group_id = VALUES(message_group_id),
+                auto_run = VALUES(auto_run)
+        """, (tid, name, ids_json, message_group_id or 0, 1 if auto_run else 0))
+        db.commit()
+    except Exception as e:
+        logger.error(f"保存帖子配置失败 tid={tid}: {e}")
+    finally:
+        db.close()
+
+
+def sync_threads_from_yaml(threads: list) -> None:
+    """
+    将 nga.yaml 中的 threads 列表同步到数据库（按 tid 插入或更新）。
+    用于首次启动或从 yaml 迁移到 DB。
+    """
+    for th in threads:
+        tid = int(th['tid'])
+        name = th.get('name', '')
+        watch_author_ids = th.get('watch_author_ids') or []
+        message_group_id = th.get('message_group_id', 0)
+        auto_run = bool(th.get('enabled', True))
+        save_thread_config(tid=tid, name=name, watch_author_ids=watch_author_ids,
+                          message_group_id=message_group_id, auto_run=auto_run)
+    logger.info("已从 yaml 同步 %d 条帖子配置到数据库", len(threads))
