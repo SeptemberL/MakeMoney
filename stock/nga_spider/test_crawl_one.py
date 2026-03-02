@@ -16,8 +16,8 @@ if str(_PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(_PROJECT_DIR))
 
 import yaml
-import nga_db
-from nga_crawler import NGACrawler
+from nga_spider import nga_db
+from nga_spider.nga_crawler import NGACrawler
 
 logging.basicConfig(
     level=logging.INFO,

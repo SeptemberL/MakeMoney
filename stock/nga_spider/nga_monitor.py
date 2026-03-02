@@ -24,8 +24,8 @@ _PROJECT_DIR = _THIS_DIR.parent
 if str(_PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(_PROJECT_DIR))
 
-import nga_db
-from nga_crawler import NGACrawler
+from . import nga_db
+from .nga_crawler import NGACrawler
 
 logger = logging.getLogger('nga_monitor')
 

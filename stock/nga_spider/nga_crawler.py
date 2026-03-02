@@ -16,8 +16,8 @@ from typing import List, Optional
 
 import requests
 
-import nga_db
-import nga_parser
+from . import nga_db
+from . import nga_parser
 
 logger = logging.getLogger(__name__)
 

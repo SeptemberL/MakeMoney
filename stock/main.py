@@ -1,5 +1,12 @@
 import os
+import sys
 from pathlib import Path
+
+# 确保项目根目录（main.py 所在目录）在 sys.path 最前，便于 nga_spider 等包被正确导入
+_MAIN_DIR = Path(__file__).resolve().parent
+if str(_MAIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_MAIN_DIR))
+
 from flask import Flask
 from stock_fetcher import StockFetcher
 from stock_analyzer import StockAnalyzer
@@ -10,7 +17,6 @@ from config import Config
 from database.database import Database
 from stock_list_manager import StockListManager
 from indicator_manager import IndicatorManager
-import sys
 import traceback
 
 # 设置更详细的错误捕获
@@ -39,7 +45,9 @@ from Managers.scheduler_system import TaskManager
 # NGA 爬虫：根据数据库 nga_thread_config 中 auto_run 开关自动运行
 try:
     from nga_spider.nga_monitor import start_nga_monitor
-except Exception:
+except Exception as e:
+    import traceback
+    traceback.print_exc()
     start_nga_monitor = None
 
 if platform.system() == 'Windows':
