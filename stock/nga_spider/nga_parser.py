@@ -56,20 +56,23 @@ def extract_images(raw: str) -> List[str]:
 
 
 # ──────────────────────── 引用信息提取 ───────────────────────────────────────
-def extract_quote(raw: str) -> Tuple[Optional[int], Optional[str]]:
+def extract_quote(raw: str) -> Tuple[Optional[int], Optional[str], Optional[str]]:
     """
-    从原始内容里提取引用的 pid 和引用摘要文本
-    返回 (quote_pid, quote_text)，无引用则为 (None, None)
+    从原始内容里提取引用的 pid、引用摘要文本、被引用作者名
+    返回 (quote_pid, quote_text, quote_name)，无引用则为 (None, None, None)
     """
-    # 标准引用 [quote][pid=xxx,...][/quote]
+    # 标准引用 [quote][pid=xxx,uid=yyy]作者名[/b]引用内容[/quote]
     m = re.search(
-        r'\[quote\]\[pid=(\d+),.+?\[/b\](.+?)\[/quote\]',
+        r'\[quote\]\[pid=(\d+),[^\]]*\](.+?)\[/b\](.+?)\[/quote\]',
         raw, flags=re.S
     )
     if m:
         pid = int(m.group(1))
-        text = strip_bbcode(m.group(2))[:200]  # 最多200字摘要
-        return pid, text
+        name = (m.group(2) or '').strip()
+        if name:
+            name = strip_bbcode(name)[:64]  # 纯文本，最多64字
+        text = strip_bbcode(m.group(3))[:200]  # 最多200字摘要
+        return pid, text, name or None
 
     # 引用主帖 [quote][tid=...][/quote]
     m2 = re.search(
@@ -78,9 +81,9 @@ def extract_quote(raw: str) -> Tuple[Optional[int], Optional[str]]:
     )
     if m2:
         text = strip_bbcode(m2.group(2))[:200]
-        return None, text  # 主帖引用没有具体 pid
+        return None, text, None  # 主帖引用没有具体 pid/name
 
-    return None, None
+    return None, None, None
 
 
 # ──────────────────────── BBCode 剥除（轻量版） ───────────────────────────────
@@ -100,38 +103,48 @@ def strip_bbcode(raw: str) -> str:
 # ──────────────────────── 构造微信推送消息 ────────────────────────────────────
 def build_wx_message(tid: int, floor_num: int, pid: int,
                      author_name: str, post_date: str,
-                     content_text: str, quote_text: Optional[str],
+                     content_text: str, quote_text: Optional[str], quote_name: Optional[str],
                      images: List[str], thread_name: str = '') -> str:
     """
     构造适合微信推送的文字消息
+    1、无引用：👤[作者名] 发送的消息 \\n 💬：正文 \\n {图片}
+    2、有引用：[引用] [被引用作者名] 引用内容 \\n 👤[作者名] 发送的消息 \\n 💬：正文 \\n {图片}
     """
-    lines = []
-    if thread_name:
-        lines.append(f'【NGA监控】{thread_name}')
-    else:
-        lines.append(f'【NGA监控】tid:{tid}')
-    lines.append(f'🏠 第 {floor_num} 楼  |  {post_date}')
-    lines.append(f'👤 {author_name}')
-    lines.append('─' * 20)
+    def fmt_images(img_list: List[str]) -> str:
+        if not img_list:
+            return ''
+        if len(img_list) == 1:
+            return img_list[0]
+        return f'共 {len(img_list)} 张图片\n' + img_list[0]
 
-    # 引用摘要
-    if quote_text:
-        short_quote = quote_text[:80] + ('…' if len(quote_text) > 80 else '')
-        lines.append(f'↩ 引用：{short_quote}')
-        lines.append('')
-
-    # 正文摘要（最多 300 字）
     body = (content_text or '').strip()
     if len(body) > 300:
         body = body[:300] + '…'
-    lines.append(body)
+    img_block = fmt_images(images or [])
+    link = f'https://bbs.nga.cn/read.php?pid={pid}&opt=128'
 
-    # 图片提示
-    if images:
-        lines.append('')
-        lines.append(f'🖼 含 {len(images)} 张图片')
-        # 只附加第一张图片URL，微信不能直接渲染但可以点击
-        lines.append(images[0])
+    if quote_text:
+        # 引用回复：[引用] [被引用作者名] 引用内容 \n 👤[作者名] 发送的消息 \n 💬：正文
+        quote_author = quote_name or '未知'
+        short_quote = (quote_text[:200] + '…') if len(quote_text) > 200 else quote_text
+        lines = [
+            f'【NGA】{thread_name or f"tid:{tid}"}',
+            f'[引用] [{quote_author}] {short_quote}',
+            f'👤 [{author_name}] 发送的消息',
+            f'💬：{body}',
+        ]
+        if img_block:
+            lines.append(img_block)
+        lines.append(link)
+        return '\n'.join(lines)
 
-    lines.append(f'\nhttps://bbs.nga.cn/read.php?pid={pid}&opt=128')
+    # 单人楼层：👤[作者名] 发送的消息 \n 💬：正文
+    lines = [
+        f'【NGA】{thread_name or f"tid:{tid}"}',
+        f'👤 [{author_name}] 发送的消息',
+        f'💬：{body}',
+    ]
+    if img_block:
+        lines.append(img_block)
+    lines.append(link)
     return '\n'.join(lines)

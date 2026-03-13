@@ -234,20 +234,33 @@ errortext = ''
 appendpid = []  # 里面是int
 
 
-def util_down(url, path, filename, prestr=''):
+def util_down(url, path, filename, prestr='', headers=None, cookies=None):
+    """
+    下载 url 到 path/prestr+filename。
+    headers、cookies 可选，用于 NGA 等需认证的图片链接。
+    """
     time.sleep(0.1)
     global errortext
     fullpath = path + '/' + prestr + filename
     try:
-        with closing(requests.get(url, stream=True)) as response:
+        kw = {'stream': True}
+        if headers is not None:
+            kw['headers'] = headers
+        if cookies is not None:
+            kw['cookies'] = cookies
+        with closing(requests.get(url, **kw)) as response:
+            response.raise_for_status()
             chunk_size = 1024  # 单次请求最大值
             with open(fullpath, 'wb') as file:
                 for data in response.iter_content(chunk_size=chunk_size):
                     file.write(data)
+        return fullpath
     except Exception as e:
         print('Failed to down url:%s, path:%s:%s' % (url, fullpath, e))
         errortext = errortext + \
             '<Failed to down url:%s, path:%s>' % (url, fullpath)
+        if headers is not None or cookies is not None:
+            raise
 
 
 def smile(raw):

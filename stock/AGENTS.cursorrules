@@ -1,0 +1,283 @@
+# AGENTS.md - Coding Guidelines for This Project
+
+This file provides guidelines for AI agents working in this stock trading/analysis codebase.
+
+## Project Overview
+
+This is a Flask-based stock trading and analysis application with:
+- Real-time stock data fetching (AKShare, Tushare)
+- Technical indicator calculations
+- NGA forum spider for monitoring threads
+- WeChat notification integration (Windows)
+- SQLite/MySQL database support
+
+## 1. Build, Lint, and Test Commands
+
+### Running the Application
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the Flask app
+python main.py
+```
+
+The app runs on `http://0.0.0.0:5123` by default.
+
+### Running Single Tests/Test Scripts
+
+This project uses standalone test scripts rather than a formal test framework:
+
+```bash
+# Test NGA crawler (single run)
+python nga_spider/test_crawl_one.py
+
+# Run a specific test script
+python TestScripts/<script_name>.py
+
+# Run with pytest if installed
+pytest tests/                    # Run all tests
+pytest tests/test_file.py        # Run specific test file
+pytest tests/test_file.py::test_function_name  # Run specific test function
+```
+
+### Database
+
+- SQLite: `stock/stocks.db` (default for development)
+- MySQL: Configure in `config.ini` under `[DATABASE]`
+
+## 2. Code Style Guidelines
+
+### Import Order
+
+Group imports in the following order with blank lines between groups:
+
+```python
+# Standard library
+import os
+import sys
+from pathlib import Path
+import logging
+import json
+import time
+import threading
+
+# Third-party libraries
+import flask
+import pandas as pd
+import numpy as np
+import akshare as ak
+import yaml
+
+# Local application imports
+from config import Config
+from database.database import Database
+from stock_fetcher import StockFetcher
+from stock_analyzer import StockAnalyzer
+
+# Conditional imports (platform-specific)
+import wxauto
+from wxauto import *
+```
+
+### Naming Conventions
+
+- **Files**: snake_case (e.g., `stock_fetcher.py`, `nga_monitor.py`)
+- **Classes**: CamelCase (e.g., `StockFetcher`, `NGACrawler`)
+- **Functions/Variables**: snake_case (e.g., `get_stock_data`, `send_message`)
+- **Constants**: UPPER_SNAKE_CASE (e.g., `MAX_RETRIES`, `DEFAULT_TIMEOUT`)
+- **Private methods**: prefix with underscore (e.g., `_internal_method`)
+
+### Type Annotations
+
+Use type hints for function parameters and return values:
+
+```python
+def get_stock_data(code: str, days: int = 365) -> pd.DataFrame | None:
+    """Get historical stock data.
+    
+    Args:
+        code: Stock code (e.g., "000001")
+        days: Number of historical days to fetch
+        
+    Returns:
+        DataFrame with stock data or None if fetch fails
+    """
+    ...
+```
+
+Common types: `str`, `int`, `float`, `bool`, `List[str]`, `Dict[str, Any]`, `Optional[X]`, `pd.DataFrame`
+
+### Error Handling
+
+Use try/except blocks with specific exception types and proper logging:
+
+```python
+# Good - specific exception, logging, proper response
+try:
+    data = fetcher.get_stock_data(code)
+    if data is None or data.empty:
+        return jsonify({'error': 'No data found'}), 404
+    return jsonify({'data': data.to_dict()})
+except ConnectionError as e:
+    logger.error(f"Failed to connect to data source: {e}")
+    return jsonify({'error': 'Connection failed'}), 500
+except ValueError as e:
+    logger.warning(f"Invalid input: {e}")
+    return jsonify({'error': str(e)}), 400
+except Exception as e:
+    logger.error(f"Unexpected error: {e}", exc_info=True)
+    return jsonify({'error': 'Internal server error'}), 500
+```
+
+Avoid bare `except:` clauses. Use `except Exception as e:` for general cases.
+
+### Logging
+
+Use the `logging` module:
+
+```python
+logger = logging.getLogger(__name__)
+
+# Log levels
+logger.debug("Debug info")
+logger.info("Operation succeeded")
+logger.warning("Potential issue")
+logger.error("Error occurred", exc_info=True)
+logger.critical("Critical failure")
+```
+
+### String Formatting
+
+Use f-strings for simple formatting:
+
+```python
+name = "stock"
+code = "000001"
+message = f"{name} ({code}) updated successfully"
+```
+
+Use `.format()` for multi-line or complex formatting.
+
+### Database Operations
+
+Always close database connections in `finally` blocks:
+
+```python
+db = Database.Create()
+cursor = None
+try:
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM stocks WHERE code = ?", (code,))
+    result = cursor.fetchone()
+    return result
+except Exception as e:
+    logger.error(f"Database error: {e}")
+    raise
+finally:
+    if cursor:
+        try:
+            cursor.close()
+        except Exception:
+            pass
+    db.close()
+```
+
+### Route Handlers (Flask)
+
+Return proper HTTP status codes and JSON responses:
+
+```python
+@bp.route('/api/stocks', methods=['GET'])
+def get_stocks():
+    try:
+        stocks = fetcher.get_stock_list()
+        return jsonify({'success': True, 'data': stocks})
+    except Exception as e:
+        logger.error(f"Failed to get stocks: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@bp.route('/api/stocks', methods=['POST'])
+def add_stock():
+    try:
+        data = request.get_json()
+        code = data.get('code')
+        if not code:
+            return jsonify({'error': 'Code is required'}), 400
+        # ... processing
+        return jsonify({'success': True}), 201
+    except Exception as e:
+        logger.error(f"Add stock failed: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+```
+
+### Docstrings
+
+Use Google-style or simple docstrings for public functions:
+
+```python
+def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate technical indicators for the given stock data.
+    
+    Args:
+        df: DataFrame with OHLCV data
+        
+    Returns:
+        DataFrame with added technical indicator columns
+    """
+    ...
+```
+
+### Configuration
+
+- Application config: `config.ini`
+- Task config: `configs/tasks_config.yaml`
+- NGA spider config: `configs/nga.yaml`
+- Use the `Config` singleton class to read settings:
+
+```python
+config = Config()
+value = config.get('SECTION', 'key')
+bool_val = config.get_boolean('SECTION', 'key')
+```
+
+### Platform-Specific Code
+
+Handle Windows-specific imports gracefully:
+
+```python
+import platform
+if platform.system() == 'Windows':
+    import wxauto
+    from wxauto import *
+```
+
+### Key Directories
+
+- `stock/` - Main application code
+- `nga_spider/` - NGA forum crawler module
+- `database/` - Database operations
+- `Core/` - Core constants and utilities
+- `Managers/` - Task scheduling and scanning managers
+- `Tasks/` - Background tasks
+- `TestScripts/` - Test and utility scripts
+- `configs/` - Configuration files
+- `templates/` - HTML templates
+- `static/` - Static assets (JS, CSS)
+
+### Common Dependencies
+
+See `requirements.txt`:
+- Flask + Flask-SocketIO
+- pandas, numpy, akshare
+- PyYAML for config
+- requests, beautifulsoup4 for scraping
+- matplotlib, mplfinance for charts
+
+## Notes
+
+- The project uses SQLite by default; configure MySQL in `config.ini` for production
+- WeChat integration only works on Windows
+- NGA spider requires authentication config in `configs/nga.yaml`
+- Task scheduler runs from `configs/tasks_config.yaml`

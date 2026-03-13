@@ -69,6 +69,6 @@ class WXGroupManager:
     
     def find_wx_group(self, groupid):
         for group in self.wxGroups:
-            if group.group_id == groupid:
+            if group.group_id == int(groupid):
                 return group.chat_list
         

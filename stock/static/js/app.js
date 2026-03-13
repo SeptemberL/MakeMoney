@@ -761,6 +761,39 @@ function executeSvnUpdate() {
     });
 }
 
+// 测试发送图片：下载配置的图片并通过剪贴板发送到微信
+function testSendImage() {
+    const statusSpan = $('#testSendImageStatus');
+    const button = $('#testSendImageBtn');
+    statusSpan.html('<span class="text-warning">正在下载并发送...</span>');
+    button.prop('disabled', true);
+    $.ajax({
+        url: '/api/test_send_image',
+        method: 'POST',
+        success: function(response) {
+            if (response.success) {
+                statusSpan.html('<span class="text-success">' + (response.message || '已发送') + '</span>');
+            } else {
+                statusSpan.html('<span class="text-danger">' + (response.message || '发送失败') + '</span>');
+            }
+        },
+        error: function(xhr) {
+            let msg = '请求失败';
+            if (xhr.responseJSON && xhr.responseJSON.message) msg = xhr.responseJSON.message;
+            else if (xhr.responseText) {
+                try { var j = JSON.parse(xhr.responseText); if (j.message) msg = j.message; } catch (e) {}
+            }
+            statusSpan.html('<span class="text-danger">' + msg + '</span>');
+        },
+        complete: function() {
+            button.prop('disabled', false);
+            setTimeout(function() {
+                if (statusSpan.find('.text-success').length > 0) statusSpan.html('');
+            }, 3000);
+        }
+    });
+}
+
 // 更新所有股票
 function updateAllStocks() {
     // 显示更新中状态
@@ -854,6 +887,72 @@ function updateStockList() {
         setTimeout(() => {
             status.textContent = '';
         }, 5000);
+    });
+}
+
+// 拉取当天全市场行情并更新到股票表
+function fetchTodayStocks() {
+    const button = document.getElementById('fetchTodayStocksBtn');
+    const status = document.getElementById('fetchTodayStatus');
+
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 拉取中...';
+    status.innerHTML = '';
+
+    fetch('/api/fetch_today_stocks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            status.innerHTML = '<span class="text-success">' + data.message + '</span>';
+            if (currentStock) {
+                loadStockData(currentStock);
+            }
+        } else {
+            status.innerHTML = '<span class="text-danger">' + data.message + '</span>';
+        }
+    })
+    .catch(error => {
+        status.innerHTML = '<span class="text-danger">请求失败: ' + error + '</span>';
+    })
+    .finally(() => {
+        button.disabled = false;
+        button.innerHTML = '<i class="fas fa-cloud-download-alt"></i> 拉取当天行情';
+    });
+}
+
+// 使用 Tushare 拉取当天日线行情
+function fetchTodayTushare() {
+    const button = document.getElementById('fetchTodayTushareBtn');
+    const status = document.getElementById('fetchTodayTushareStatus');
+
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Tushare 拉取中...';
+    status.innerHTML = '';
+
+    fetch('/api/fetch_today_tushare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            status.innerHTML = '<span class="text-success">' + data.message + '</span>';
+            if (currentStock) {
+                loadStockData(currentStock);
+            }
+        } else {
+            status.innerHTML = '<span class="text-danger">' + data.message + '</span>';
+        }
+    })
+    .catch(error => {
+        status.innerHTML = '<span class="text-danger">请求失败: ' + error + '</span>';
+    })
+    .finally(() => {
+        button.disabled = false;
+        button.innerHTML = '<i class="fas fa-chart-line"></i> 拉取当天行情 (Tushare)';
     });
 }
 

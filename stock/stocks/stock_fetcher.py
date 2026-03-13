@@ -36,43 +36,6 @@ class StockFetcher:
         finally:
             db.close()
 
-    def _get_stock_table_name(self, code: str) -> str:
-        """获取股票对应的数据表名"""
-        market = 'SH' if code.startswith(('6', '9')) else 'SZ'
-        return f"stock_{code}_{market}"
-
-    def _ensure_stock_table_exists(self, code: str) -> bool:
-        """确保股票数据表存在"""
-        table_name = self._get_stock_table_name(code)
-        try:
-            db = Database.Create()
-            create_table_sql = f"""
-            CREATE TABLE IF NOT EXISTS {table_name} (
-                trade_date DATE PRIMARY KEY,
-                code VARCHAR(10) NOT NULL,
-                open DECIMAL(10,2),
-                high DECIMAL(10,2),
-                low DECIMAL(10,2),
-                close DECIMAL(10,2),
-                volume BIGINT,
-                amount DECIMAL(20,2),
-                amplitude DECIMAL(10,2),
-                pct_change DECIMAL(10,2),
-                p_change DECIMAL(10,2),
-                turnover_rate DECIMAL(10,2),
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_trade_date (trade_date)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """
-            db.execute(create_table_sql)
-            logger.info(f"股票数据表 {table_name} 创建或已存在")
-            return True
-        except Exception as e:
-            logger.error(f"创建股票数据表 {table_name} 失败: {str(e)}")
-            return False
-        finally:
-            db.close()
-
     def get_stock_list(self) -> List[Dict[str, str]]:
         """获取所有股票列表"""
         cursor = None
@@ -156,7 +119,6 @@ class StockFetcher:
 
     def get_stock_data(self, code: str, days: int = -1) -> Optional[pd.DataFrame]:
         """获取股票历史数据"""
-        db = None
         try:
             # 确保股票数据表存在
             if not self._ensure_stock_table_exists(code):
@@ -174,17 +136,10 @@ class StockFetcher:
                 start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
                 new_data_only = False
 
-            # 若当前时间早于当天 15:30，只获取到前一天的数据（当日数据 15:30 后才完整）
-            now = datetime.now()
-            if now.hour < 15 or (now.hour == 15 and now.minute < 30):
-                end_date = (now - timedelta(days=1)).strftime('%Y%m%d')
-            else:
-                end_date = now.strftime('%Y%m%d')
-
             # 使用 akshare 获取股票数据
             df = ak.stock_zh_a_hist(symbol=code, period="daily", 
                                   start_date=start_date,
-                                  end_date=end_date,
+                                  end_date=datetime.now().strftime('%Y%m%d'),
                                   adjust="qfq")
             
             if df is None or df.empty:
@@ -233,8 +188,8 @@ class StockFetcher:
             logger.error(f"获取股票 {code} 数据失败: {str(e)}")
             return None
         finally:
-            if db:
-                db.close()
+            db.close()
+
 
     def _stock_has_data(self, code: str) -> bool:
         """检查股票是否有历史数据"""
@@ -253,9 +208,7 @@ class StockFetcher:
 
     def _get_latest_stock_date(self, code: str) -> Optional[datetime]:
         """获取股票最新的数据日期"""
-        db = None
         try:
-            db = Database.Create()
             table_name = self._get_stock_table_name(code)
             query = f"SELECT MAX(trade_date) FROM {table_name}"
             result = db.fetch_one(query)
@@ -264,8 +217,7 @@ class StockFetcher:
             logger.error(f"获取股票 {code} 数据失败: {str(e)}")
             return None
         finally:
-            if db:
-                db.close()
+            db.close()
 
     def _store_stock_data(self, code: str, df: pd.DataFrame) -> bool:
         """存储股票数据到数据库"""

@@ -1,39 +1,32 @@
 # NGA 论坛帖子监控配置
-# 帖子列表（threads）会在首次启动时同步到数据库 nga_thread_config 表；
-# 之后是否“程序启动后默认运行”由数据库中的 auto_run 字段控制（1=自动运行，0=不运行）。
+# 监控的帖子列表请在系统「NGA 监控」页面中添加/编辑，不再由此文件配置。
 # auth、settings 仍由此文件提供。
 
 settings:
-  # HTTP 请求 User-Agent（可改为浏览器或 NGA 客户端标识）
-  user_agent: 'Nga_Official/80023'
+  # User-Agent：建议使用 NGA_WP_JW（与官方文档一致，避免“访客不能直接访问”）
+  # 全局开关：1 启用，0 关闭（为 0 时程序启动不运行 NGA 爬虫）
+  enabled: 0
+  user_agent: 'NGA_WP_JW'
   # 爬取间隔（秒），建议不低于 10 秒，避免被封
   poll_interval: 30
   # 请求超时（秒）
   request_timeout: 15
   # 请求失败重试次数
   max_retries: 3
+  # 楼层漏爬调试日志：1 开启详细 log 追查漏楼原因，0 关闭
+  debug_floor_log: 0
 
 # NGA 账号 Cookie（必填，否则无法访问登录内容）
 auth:
   ngaPassportUid: '5337595'
   ngaPassportCid: 'X9r3v6avhskvr9jvadop7jlgm76g3d5ovcj37qjr'
 
-# 监控的帖子列表
-threads:
-  - tid: 45974302
-    # 帖子备注名（仅用于日志显示）
-    name: '狼大 26 年主帖子'
-    # 关注的用户 authorId 列表（整数）。为空则监控所有用户
-    watch_author_ids:
-      - 150058
-    # 发送消息使用的群组ID（关联 send_message_group.yaml 里的 group_id）
-    message_group_id: 0
-    # 是否启用该帖子的监控
-    enabled: true
-
-  #- tid: 87654321
-  #  name: '示例帖子2'
-  #  # 空列表 = 监控所有发言
-  #  watch_author_ids: []
- #   message_group_id: 2
- #   enabled: false
+# 监控的帖子列表（已迁移至 Web 页面管理，此处仅作示例保留，程序不会读取）
+threads: []
+# 示例格式（请到 NGA 监控页面添加）:
+# threads:
+#   - tid: 45974302
+#     name: '狼大 26 年主帖子'
+#     watch_author_ids: [150058]
+#     message_group_id: 1
+#     enabled: true

@@ -1,20 +1,20 @@
 import configparser
 import os
 
-class Config:
+class ConfigManager:
     _instance = None
     _config = None
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(Config, cls).__new__(cls)
+            cls._instance = super(ConfigManager, cls).__new__(cls)
             cls._instance._load_config()
         return cls._instance
 
     def _load_config(self):
         self._config = configparser.ConfigParser()
         config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
-        self._config.read(config_path, encoding='utf-8')
+        self._config.read(config_path)
 
     def get(self, section, key):
         """获取配置值"""

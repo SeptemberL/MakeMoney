@@ -29,47 +29,7 @@ def init_project():
     print(f"创建日志文件: {log_file}")
     
     db = Database.Create()
-    # 创建股票配置表
-    db.execute('''
-    CREATE TABLE IF NOT EXISTS stock_config (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        stock_code TEXT NOT NULL UNIQUE,
-        stock_name TEXT,
-        is_active INTEGER DEFAULT 1,
-        alert_enabled INTEGER DEFAULT 0,
-        alert_upper_threshold REAL DEFAULT 0,
-        alert_lower_threshold REAL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    # 创建股票数据表
-    db.execute('''
-    CREATE TABLE IF NOT EXISTS stock_data (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        stock_code TEXT NOT NULL,
-        trade_date DATE NOT NULL,
-        open REAL,
-        high REAL,
-        low REAL,
-        close REAL,
-        volume REAL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(stock_code, trade_date)
-    )
-    ''')
-    
-    # 创建报警历史表
-    db.execute('''
-    CREATE TABLE IF NOT EXISTS alert_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        stock_code TEXT NOT NULL,
-        alert_type TEXT NOT NULL,
-        alert_message TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
+    db.init_database()
     db.commit()
     db.close()
     

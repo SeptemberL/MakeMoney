@@ -71,7 +71,7 @@ config = Config()
 app = Flask(__name__)
 app.config['MYSQL_HOST'] = config.get('DATABASE', 'DB_HOST') 
 app.config['MYSQL_PORT'] = config.get('DATABASE', 'DB_PORT') # MySQL主机地址
-app.config['MYSQL_USER'] = config.get_int('DATABASE', 'DB_USER') # MySQL用户名
+app.config['MYSQL_USER'] = config.get('DATABASE', 'DB_USER') # MySQL用户名
 app.config['MYSQL_PASSWORD'] = config.get('DATABASE', 'DB_PASSWORD') # MySQL密码
 app.config['MYSQL_DB'] = config.get('DATABASE', 'DB_NAME') # MySQL数据库名
 app.secret_key = 'your-secret-key-here'  # 请更改为随机字符串
@@ -123,4 +123,4 @@ if __name__ == '__main__':
 
     
     # 启动Flask应用
-    app.run(host='0.0.0.0', port=5123, debug=True) 
+    app.run(host='0.0.0.0', port=5123, debug=False) 

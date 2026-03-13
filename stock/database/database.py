@@ -1,10 +1,51 @@
-import mysql.connector
-from config import Config
+import os
+import sqlite3
 import logging
 import json
 from werkzeug.security import generate_password_hash, check_password_hash
+from config import Config
+
+try:
+    import mysql.connector
+    from mysql.connector.pooling import MySQLConnectionPool
+    _HAS_MYSQL = True
+except ImportError:
+    _HAS_MYSQL = False
 
 logger = logging.getLogger(__name__)
+
+_USE_POOL_TYPES = ('mysql', 'mariadb')
+_SQLITE_TYPES = ('sqlite', 'sqlite3')
+_connection_pool = None
+
+
+def _get_pool():
+    """懒加载创建 MySQL 连接池，复用连接避免频繁建连导致卡顿"""
+    global _connection_pool
+    if _connection_pool is None:
+        if not _HAS_MYSQL:
+            raise ImportError(
+                "mysql-connector-python 未安装，请 pip install mysql-connector-python 或切换 DB_TYPE=sqlite"
+            )
+        cfg = Config()
+        _connection_pool = MySQLConnectionPool(
+            pool_name="stock_pool",
+            pool_size=10,
+            host=cfg.get('DATABASE', 'DB_HOST'),
+            port=cfg.get_int('DATABASE', 'DB_PORT'),
+            database=cfg.get('DATABASE', 'DB_NAME'),
+            user=cfg.get('DATABASE', 'DB_USER'),
+            password=cfg.get('DATABASE', 'DB_PASSWORD'),
+            charset='utf8mb4',
+        )
+        logger.info("MySQL 连接池已创建 (pool_size=10)")
+    return _connection_pool
+
+
+def _sqlite_dict_factory(cursor, row):
+    """SQLite row_factory：让 fetchone/fetchall 返回 dict"""
+    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
 
 class Database:
     _instance = None
@@ -14,7 +55,7 @@ class Database:
     def Create():
         db = Database()
         db.connect()
-        return db   
+        return db
 
     """def __new__(cls):
         if cls._instance is None:
@@ -24,66 +65,129 @@ class Database:
     def __init__(self):
         self.config = Config()
         self._connection = None
+        self._db_type = (self.config.get('DATABASE', 'DB_TYPE') or 'mysql').lower()
+
+    # ─────────────────────────── 类型判断 ────────────────────────────────────
+
+    @property
+    def is_sqlite(self) -> bool:
+        return self._db_type in _SQLITE_TYPES
+
+    @property
+    def db_type(self) -> str:
+        return self._db_type
+
+    def adapt_sql(self, query: str) -> str:
+        """将业务代码中统一使用的 MySQL 风格 SQL 适配为当前数据库方言。
+        业务层统一写 %s 占位符 + INSERT IGNORE，此方法在 SQLite 时自动转换。"""
+        if not self.is_sqlite:
+            return query
+        query = query.replace('%s', '?')
+        query = query.replace('INSERT IGNORE', 'INSERT OR IGNORE')
+        return query
+
+    # ─────────────────────────── 连接管理 ────────────────────────────────────
 
     def connect(self):
-        """连接到数据库"""
+        """连接到数据库（MySQL 从连接池取连接；SQLite 直连文件）"""
         try:
-            if self._connection and self._connection.is_connected():
+            if self.is_sqlite:
+                if self._connection is not None:
+                    return True
+                db_path = self.config.get('DATABASE', 'DB_PATH') or 'database/stock.db'
+                if not os.path.isabs(db_path):
+                    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    db_path = os.path.join(project_root, db_path)
+                os.makedirs(os.path.dirname(db_path), exist_ok=True)
+                self._connection = sqlite3.connect(db_path, check_same_thread=False)
+                self._connection.row_factory = _sqlite_dict_factory
+                self._connection.execute('PRAGMA journal_mode=WAL')
+                self._connection.execute('PRAGMA foreign_keys=ON')
+                logger.info(f"SQLite 已连接: {db_path}")
                 return True
-            self._connection = mysql.connector.connect(
-                    host=self.config.get('DATABASE', 'DB_HOST'),
-                    port=self.config.get_int('DATABASE', 'DB_PORT'),
-                    database=self.config.get('DATABASE', 'DB_NAME'),
-                    user=self.config.get('DATABASE', 'DB_USER'),
-                    password=self.config.get('DATABASE', 'DB_PASSWORD'),
-                    charset='utf8mb4',
-                    buffered = True
-                )
-
-            logger.info(f"数据库连接成功 - 类型: {self.config.get('DATABASE', 'DB_TYPE')}")
-            return True
+            else:
+                if not _HAS_MYSQL:
+                    raise ImportError(
+                        "mysql-connector-python 未安装，请 pip install mysql-connector-python 或切换 DB_TYPE=sqlite"
+                    )
+                if self._connection and self._connection.is_connected():
+                    return True
+                if self._db_type in _USE_POOL_TYPES:
+                    self._connection = _get_pool().get_connection()
+                else:
+                    self._connection = mysql.connector.connect(
+                        host=self.config.get('DATABASE', 'DB_HOST'),
+                        port=self.config.get_int('DATABASE', 'DB_PORT'),
+                        database=self.config.get('DATABASE', 'DB_NAME'),
+                        user=self.config.get('DATABASE', 'DB_USER'),
+                        password=self.config.get('DATABASE', 'DB_PASSWORD'),
+                        charset='utf8mb4',
+                        buffered=True,
+                    )
+                return True
         except Exception as e:
             logger.error(f"数据库连接失败: {str(e)}")
             return False
 
     def get_connection(self):
         """获取数据库连接"""
-        if not self._connection or (
-            self.config.get('DATABASE', 'DB_TYPE').lower() == 'mysql' and 
-            not self._connection.is_connected()
-        ):
-            self.connect()
+        if self.is_sqlite:
+            if self._connection is None:
+                self.connect()
+            if self._connection is None:
+                raise RuntimeError("SQLite 连接失败，请检查 DB_PATH 配置")
+        else:
+            if not self._connection or (
+                self._db_type in _USE_POOL_TYPES
+                and not self._connection.is_connected()
+            ):
+                self.connect()
+            if self._connection is None:
+                raise RuntimeError("数据库连接失败，请检查配置与 MySQL 服务是否正常")
         return self._connection
 
     def close(self):
-        """关闭数据库连接"""
+        """关闭数据库连接（MySQL 时归还到连接池）"""
         if self._connection:
-            if self.config.get('DATABASE', 'DB_TYPE').lower() == 'mysql':
-                if self._connection.is_connected():
+            try:
+                if self.is_sqlite:
                     self._connection.close()
-            else:
-                self._connection.close()
+                elif self._db_type in _USE_POOL_TYPES and self._connection.is_connected():
+                    self._connection.close()
+                elif self._db_type not in _USE_POOL_TYPES:
+                    self._connection.close()
+            except Exception:
+                pass
             self._connection = None
-            logger.info("数据库连接已关闭")
+
+    # ─────────────────────────── SQL 执行 ────────────────────────────────────
 
     def execute(self, query, params=None):
         """执行SQL查询"""
         cursor = None
+        conn = None
         try:
             conn = self.get_connection()
-            cursor = conn.cursor(dictionary=True)  # 使用字典游标
-            
+            query = self.adapt_sql(query)
+            if self.is_sqlite:
+                cursor = conn.cursor()
+            else:
+                cursor = conn.cursor(dictionary=True, buffered=True)
+
             if params:
                 cursor.execute(query, params)
             else:
                 cursor.execute(query)
-                
+
             conn.commit()
             return cursor
         except Exception as e:
             logger.error(f"执行SQL查询失败: {str(e)}")
             if conn:
-                conn.rollback()
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             raise
 
     def fetch_all(self, query, params=None):
@@ -91,26 +195,36 @@ class Database:
         cursor = None
         try:
             cursor = self.execute(query, params)
-            result = cursor.fetchall()
-            cursor.close()  # 确保关闭游标
-            return result
+            return cursor.fetchall()
         except Exception as e:
             logger.error(f"执行查询失败: {str(e)}")
             raise
         finally:
             if cursor:
-                cursor.close()  # 确保在出错时也关闭游标
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
 
     def fetch_one(self, query, params=None):
         """执行查询并返回一个结果"""
-        cursor = self.execute(query, params)
-        result = cursor.fetchone()
-        cursor.close()
-        return result
+        cursor = None
+        try:
+            cursor = self.execute(query, params)
+            return cursor.fetchone()
+        finally:
+            if cursor:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
 
     def begin_transaction(self):
         """开始事务"""
-        self.get_connection().start_transaction()
+        if self.is_sqlite:
+            self.get_connection().execute('BEGIN')
+        else:
+            self.get_connection().start_transaction()
 
     def commit(self):
         """提交事务"""
@@ -120,13 +234,16 @@ class Database:
         """回滚事务"""
         self.get_connection().rollback()
 
+    # ─────────────────────────── 建表 ────────────────────────────────────────
+
     def init_database(self):
-        conn = self.get_connection()
-        c = conn.cursor()
-        
-        # 创建股票配置表
-        c.execute('''
-        CREATE TABLE IF NOT EXISTS stock_config (
+        if self.is_sqlite:
+            self._init_database_sqlite()
+        else:
+            self._init_database_mysql()
+
+    def _init_database_sqlite(self):
+        self.execute('''CREATE TABLE IF NOT EXISTS stock_config (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             stock_code TEXT NOT NULL UNIQUE,
             stock_name TEXT,
@@ -135,12 +252,8 @@ class Database:
             alert_upper_threshold REAL DEFAULT 0,
             alert_lower_threshold REAL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        ''')
-        
-        # 创建股票数据表
-        c.execute('''
-        CREATE TABLE IF NOT EXISTS stock_data (
+        )''')
+        self.execute('''CREATE TABLE IF NOT EXISTS stock_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             stock_code TEXT NOT NULL,
             trade_date DATE NOT NULL,
@@ -152,32 +265,20 @@ class Database:
             turnover REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(stock_code, trade_date)
-        )
-        ''')
-
-        # 创建报警历史表
-        c.execute('''
-        CREATE TABLE IF NOT EXISTS alert_history (
+        )''')
+        self.execute('''CREATE TABLE IF NOT EXISTS alert_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             stock_code TEXT NOT NULL,
             alert_type TEXT NOT NULL,
             alert_message TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        ''')
-        
-        # 创建股票表
-        c.execute('''
-        CREATE TABLE IF NOT EXISTS stocks (
+        )''')
+        self.execute('''CREATE TABLE IF NOT EXISTS stocks (
             code TEXT PRIMARY KEY,
             name TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        ''')
-        
-        # 创建用户表
-        c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
+        )''')
+        self.execute('''CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
@@ -185,79 +286,106 @@ class Database:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_login TIMESTAMP,
             settings TEXT
-        )
-        ''')
-        
-        conn.commit()
-        conn.close()
+        )''')
+
+    def _init_database_mysql(self):
+        self.execute('''CREATE TABLE IF NOT EXISTS stock_config (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            stock_code VARCHAR(32) NOT NULL UNIQUE,
+            stock_name VARCHAR(128),
+            is_active TINYINT DEFAULT 1,
+            alert_enabled TINYINT DEFAULT 0,
+            alert_upper_threshold DOUBLE DEFAULT 0,
+            alert_lower_threshold DOUBLE DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+        self.execute('''CREATE TABLE IF NOT EXISTS stock_data (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            stock_code VARCHAR(32) NOT NULL,
+            trade_date DATE NOT NULL,
+            open DOUBLE,
+            high DOUBLE,
+            low DOUBLE,
+            close DOUBLE,
+            volume DOUBLE,
+            turnover DOUBLE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_code_date (stock_code, trade_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+        self.execute('''CREATE TABLE IF NOT EXISTS alert_history (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            stock_code VARCHAR(32) NOT NULL,
+            alert_type VARCHAR(64) NOT NULL,
+            alert_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+        self.execute('''CREATE TABLE IF NOT EXISTS stocks (
+            code VARCHAR(32) PRIMARY KEY,
+            name VARCHAR(128),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+        self.execute('''CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(64) UNIQUE NOT NULL,
+            password VARCHAR(256) NOT NULL,
+            email VARCHAR(128) UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_login TIMESTAMP NULL,
+            settings TEXT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+
+    # ─────────────────────────── 用户管理 ────────────────────────────────────
 
     def create_user(self, username: str, password: str, email: str = None) -> bool:
         """创建新用户"""
         try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
             hashed_password = generate_password_hash(password)
-            print(len((username, hashed_password, email)))  # 应该是3
-            # 对密码进行哈希处理
             if isinstance(hashed_password, bytes):
                 hashed_password = hashed_password.decode('utf-8')
-            print(len(hashed_password))
-            print(f"Username: {username}, Hashed Password: {hashed_password}, Email: {email}")
-            cursor.execute(
-                'INSERT INTO users (username, password, email) VALUES (%s,%s, %s)',
+            self.execute(
+                'INSERT INTO users (username, password, email) VALUES (%s, %s, %s)',
                 (username, hashed_password, email)
             )
-            
-            conn.commit()
-            conn.close()
             return True
         except Exception as e:
             logger.error(f"创建用户失败: {str(e)}")
             return False
+        finally:
+            self.close()
 
     def verify_user(self, username: str, password: str) -> dict:
         """验证用户登录"""
         try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('SELECT id, username, password, settings FROM users WHERE username = %s', (username,))
-            user = cursor.fetchone()
-            
-            if user and check_password_hash(user[2], password):
-                # 更新最后登录时间
-                cursor.execute('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s', (user[0],))
-                conn.commit()
-                
+            row = self.fetch_one(
+                'SELECT id, username, password, settings FROM users WHERE username = %s',
+                (username,)
+            )
+            if row and check_password_hash(row['password'], password):
+                self.execute(
+                    'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s',
+                    (row['id'],)
+                )
                 return {
                     'success': True,
-                    'user_id': user[0],
-                    'username': user[1],
-                    'settings': user[3]
+                    'user_id': row['id'],
+                    'username': row['username'],
+                    'settings': row['settings']
                 }
-            
             return {'success': False, 'message': '用户名或密码错误'}
         except Exception as e:
             logger.error(f"验证用户失败: {str(e)}")
             return {'success': False, 'message': '登录失败'}
         finally:
-            conn.close()
+            self.close()
 
     def update_user_settings(self, user_id: int, settings: dict) -> bool:
         """更新用户设置"""
         try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            # 将设置转换为JSON字符串
             settings_json = json.dumps(settings)
-            
-            cursor.execute(
-                'UPDATE users SET settings = ? WHERE id = ?',
+            self.execute(
+                'UPDATE users SET settings = %s WHERE id = %s',
                 (settings_json, user_id)
             )
-            
-            conn.commit()
             return True
         except Exception as e:
             logger.error(f"更新用户设置失败: {str(e)}")
@@ -266,17 +394,12 @@ class Database:
     def get_user_settings(self, user_id: int) -> dict:
         """获取用户设置"""
         try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('SELECT settings FROM users WHERE id = %s', (user_id,))
-            result = cursor.fetchone()
-            
-            if result and result[0]:
-                return json.loads(result[0])
+            row = self.fetch_one('SELECT settings FROM users WHERE id = %s', (user_id,))
+            if row and row.get('settings'):
+                return json.loads(row['settings'])
             return {}
         except Exception as e:
             logger.error(f"获取用户设置失败: {str(e)}")
             return {}
         finally:
-            conn.close() 
+            self.close()

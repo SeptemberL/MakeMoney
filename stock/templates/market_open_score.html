@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>今日大盘开盘评分 - 股票分析系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet">
+    <style>
+        .score-hero {
+            background: linear-gradient(135deg, #2d5016 0%, #1a3009 100%);
+            color: #fff;
+            border-radius: 12px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+        .score-hero h1 {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        .score-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .score-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+        }
+        .score-placeholder {
+            min-height: 180px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #6c757d;
+            border: 2px dashed #dee2e6;
+            border-radius: 8px;
+            background: #f8f9fa;
+        }
+    </style>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">股票分析系统</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">首页</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/indicator_manager">指标管理</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/stock_filter">
+                            <i class="fas fa-filter"></i> 股票筛选器
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/nga_monitor">
+                            <i class="fas fa-rss"></i> NGA 监控
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/quant">
+                            <i class="fas fa-chart-line"></i> 量化
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/market_open_score">
+                            <i class="fas fa-sun"></i> 今日大盘开盘评分
+                        </a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-4">
+        <!-- 页面标题 -->
+        <div class="score-hero">
+            <h1><i class="fas fa-sun me-2"></i>今日大盘开盘评分</h1>
+            <p class="lead mb-0">基于开盘数据对当日大盘走势进行综合评分，供参考。</p>
+        </div>
+
+        <!-- 评分展示区（预留后续接入评分逻辑） -->
+        <div class="row">
+            <div class="col-lg-8">
+                <div class="card score-card">
+                    <div class="card-header">
+                        <i class="fas fa-chart-bar me-2"></i>评分结果
+                    </div>
+                    <div class="card-body">
+                        <div class="score-placeholder">
+                            <span><i class="fas fa-spinner fa-pulse me-2"></i>评分功能开发中，敬请期待</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-4">
+                <div class="card score-card">
+                    <div class="card-header">
+                        <i class="fas fa-info-circle me-2"></i>说明
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-0">
+                            本页将展示今日大盘开盘后的综合评分，可包含涨跌家数、量能、板块强弱等维度的加权评分，便于快速判断当日市场情绪与可操作性。
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

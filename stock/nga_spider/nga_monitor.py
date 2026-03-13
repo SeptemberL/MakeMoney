@@ -54,7 +54,7 @@ class NGAMonitor:
         self.crawlers: List[NGACrawler] = []
 
     def _init(self):
-        """初始化 DB 表 + 从数据库读取 auto_run=1 的帖子配置 + 构建 crawler 列表"""
+        """初始化 DB 表 + 从数据库读取 auto_run=1 的帖子配置 + 构建 crawler 列表。帖子列表仅来自数据库，由监控页面管理。"""
         nga_db.init_tables()
 
         auth_cfg = self.cfg.get('auth', {})
@@ -62,19 +62,20 @@ class NGAMonitor:
         user_agent = settings.get('user_agent') or 'Nga_Official/80023'
         threads = nga_db.get_thread_configs(only_auto_run=True)
 
-        # 若数据库中尚无配置，从 nga.yaml 同步后再读
         if not threads:
-            yaml_threads = self.cfg.get('threads', [])
-            if yaml_threads:
-                nga_db.sync_threads_from_yaml(yaml_threads)
-                threads = nga_db.get_thread_configs(only_auto_run=True)
-            else:
-                logger.info("数据库与 yaml 均无帖子配置，跳过 NGA 监控")
-                return
+            logger.info("数据库中无自动运行的帖子配置，跳过 NGA 监控。请在 NGA 监控页面添加并开启帖子。")
+            return
 
         for th in threads:
             tid = int(th['tid'])
-            crawler = NGACrawler(tid=tid, thread_cfg=th, auth_cfg=auth_cfg, wx=self.wx, user_agent=user_agent)
+            crawler = NGACrawler(
+                tid=tid,
+                thread_cfg=th,
+                auth_cfg=auth_cfg,
+                wx=self.wx,
+                user_agent=user_agent,
+                settings=settings,
+            )
             self.crawlers.append(crawler)
             logger.info(f"已注册监控帖子: [{crawler.name}] tid={tid} (auto_run=1)")
 
@@ -86,6 +87,16 @@ class NGAMonitor:
         :param block: True = 阻塞当前线程（脚本直接运行时用）
                       False = 在后台线程运行（集成到 Flask/APScheduler 时用）
         """
+        # 全局开关：settings.enabled 为 0/False 时，直接跳过启动
+        enabled = self.cfg.get('settings', {}).get('enabled', 1)
+        try:
+            enabled = int(enabled)
+        except (TypeError, ValueError):
+            enabled = 1
+        if not enabled:
+            logger.info("NGA 监控已被全局开关关闭（settings.enabled=0），跳过启动")
+            return
+
         self._init()
 
         if not self.crawlers:

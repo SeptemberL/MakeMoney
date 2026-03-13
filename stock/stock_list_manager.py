@@ -43,9 +43,7 @@ class StockListManager:
     def get_all_a_stocks(self) -> List[Dict[str, str]]:
         """
         获取所有A股股票信息，并筛选：
-        1. 只保留00和60开头的股票
-        2. 排除退市股票
-        3. 排除ST股票
+        1. 保留主板(00/60)、创业板(300)、科创板(688)的股票
         返回: 股票列表和isSameDay标志(表示数据是否当天更新过)
         """
         # 检查数据是否当天更新过
@@ -68,12 +66,14 @@ class StockListManager:
             # 确保代码列为字符串类型
             df['code'] = df['code'].astype(str)
             
-            # 筛选00和60开头的股票
-            mask = df['code'].str.startswith(('00', '60'))
+            # 筛选主板(00/60)、创业板(300)、科创板(688)的股票
+            mask = df['code'].str.startswith(('00', '30', '60', '688'))
             df = df[mask].copy()
             
-            # 添加市场信息
-            df['market'] = df['code'].apply(lambda x: 'SZ' if x.startswith('00') else 'SH')
+            # 添加市场信息：00/30开头属于深圳(SZ)，60/688开头属于上海(SH)
+            df['market'] = df['code'].apply(
+                lambda x: 'SZ' if x.startswith(('00', '30')) else 'SH'
+            )
             
             # 获取股票状态信息
             #status_df = ak.stock_info_sz_status_cm()
@@ -90,7 +90,8 @@ class StockListManager:
             #df = df[df['name'].str.contains('上市')]
             
             # 排除ST股票（股票名称中包含ST或*ST）
-            df = df[~df['name'].str.contains('ST|退')]
+            df = df[~df['name'].str.contains('退')]
+            
             
             # 转换为列表格式
             stocks = []
@@ -351,26 +352,36 @@ class StockListManager:
                 if market == 'A股':
                     if need_full_history:
                         logger.info(f"获取{stock_id}股票所有数据")
+                        now = datetime.now()
+                        if now.hour < 15 or (now.hour == 15 and now.minute < 30):
+                            end_date = (now - timedelta(days=1)).strftime('%Y%m%d')
+                        else:
+                            end_date = now.strftime('%Y%m%d')
                         df = ak.stock_zh_a_hist(symbol=stock_id, period="daily", 
-                                              adjust="qfq", start_date='19900101')
+                                              adjust="qfq", start_date='19900101', end_date=end_date)
                         needUpdate = True
                     else:
-                        # 将时间设置为当天 15:00:00
-                        threshold_time = datetime.now().replace(hour=15, minute=0, second=0)
+                        # 若更新股票数据库时间早于当天 15:30，只获取到前一天的数据
+                        threshold_time = datetime.now().replace(hour=15, minute=30, second=0)
+                        now = datetime.now()
+                        if now < threshold_time:
+                            end_date = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
+                        else:
+                            end_date = current_date
 
                         # 判断 last_date 是否在当天 15 点之前
                         if int(last_date.strftime('%Y%m%d')) < int(current_date):
                             start_date = (last_date + timedelta(days=1)).strftime('%Y%m%d')
-                            logger.info(f"获取{stock_id}股票数据{start_date}到今天的")
+                            logger.info(f"获取{stock_id}股票数据{start_date}到{end_date}")
                             df = ak.stock_zh_a_hist(symbol=stock_id, period="daily", 
-                                                adjust="qfq", start_date=start_date)
+                                                adjust="qfq", start_date=start_date, end_date=end_date)
                             needUpdate = True
                         elif last_Updated_date < threshold_time:
                             start_date = (last_Updated_date).strftime('%Y%m%d')
-                            logger.info(f"获取{stock_id}股票数据{start_date}到今天的")
+                            logger.info(f"获取{stock_id}股票数据{start_date}到{end_date}")
                             df = ak.stock_zh_a_hist(symbol=stock_id, period="daily", 
-                                                adjust="qfq", start_date=start_date)
-                            needUpdateCurrentDate = True
+                                                adjust="qfq", start_date=start_date, end_date=end_date)
+                            needUpdateCurrentDate = (end_date == current_date)
                             needUpdate = True
                 if needUpdate:
                     df = df.rename(columns={

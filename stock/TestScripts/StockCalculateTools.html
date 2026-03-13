@@ -1,0 +1,1234 @@
+<!DOCTYPE html>
+<html lang="zh-CN" id="theme-root" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+    <title>牛股计算器 · 移动增强版</title>
+    <!-- 锁定 Element Plus 版本为 2.6.3 -->
+    <link rel="stylesheet" href="https://unpkg.com/element-plus@2.6.3/dist/index.css">
+    <script src="https://unpkg.com/vue@3.4.21/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/element-plus@2.6.3/dist/index.full.min.js"></script>
+    <script src="https://unpkg.com/element-plus/dist/locale/zh-cn.js"></script>
+    <script src="https://unpkg.com/sortablejs@1.15.2/Sortable.min.js"></script>
+    
+    <!-- SVG 图标符号 -->
+    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+        <symbol id="icon-add" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></symbol>
+        <symbol id="icon-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></symbol>
+        <symbol id="icon-import" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></symbol>
+        <symbol id="icon-export" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></symbol>
+        <symbol id="icon-delete" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+        <symbol id="icon-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></symbol>
+        <symbol id="icon-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21H4V4"/><path d="M7 15l2-3 3 3 5-7"/></symbol>
+        <symbol id="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></symbol>
+        <symbol id="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></symbol>
+        <symbol id="icon-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"/></symbol>
+        <symbol id="icon-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></symbol>
+        <symbol id="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></symbol>
+    </svg>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap');
+
+        .icon { width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; }
+        .disclaimer-dialog .el-dialog__header { border-bottom: 1px solid var(--border-color); }
+        .disclaimer-dialog .el-dialog__title { color: var(--warning); font-weight: 600; }
+
+        /* 主题变量 */
+        html.dark {
+            --bg-primary: #0a0e17;
+            --bg-card: #121a2b;
+            --bg-row: #0d1421;
+            --bg-row-alt: #0f1a2c;
+            --text-primary: #e6e6e6;
+            --text-secondary: #7a8ba3;
+            --up-color: #ff4d4f;
+            --down-color: #52c41a;
+            --border-color: #1e2a3d;
+            --accent: #4a9eff;
+            --btn-bg: #1a2940;
+            --btn-hover: #2a3d5c;
+            --warning: #fa8c16;
+            --input-bg: #1a2940;
+            --input-border: #2a3d5c;
+        }
+        html.light {
+            --bg-primary: #f0f2f5;
+            --bg-card: #ffffff;
+            --bg-row: #f5f7fa;
+            --bg-row-alt: #fafafa;
+            --text-primary: #303133;
+            --text-secondary: #606266;
+            --up-color: #f56c6c;
+            --down-color: #67c23a;
+            --border-color: #dcdfe6;
+            --accent: #409eff;
+            --btn-bg: #ecf5ff;
+            --btn-hover: #d9ecff;
+            --warning: #e6a23c;
+            --input-bg: #ffffff;
+            --input-border: #dcdfe6;
+        }
+
+        body { 
+            background-color: var(--bg-primary); 
+            margin: 0; 
+            padding: 0;
+            font-family: "JetBrains Mono", "Noto Sans SC", "Consolas", monospace;
+            height: 100vh; 
+            box-sizing: border-box; 
+            overflow: hidden; 
+            color: var(--text-primary);
+            font-size: 13px;
+            transition: background-color 0.3s, color 0.3s;
+        }
+
+        #app { 
+            height: 100%; 
+            display: flex; 
+            flex-direction: column; 
+            position: relative; 
+            z-index: 1; 
+            padding: 0; 
+        }
+        
+        .app-container { 
+            flex: 1; 
+            display: flex; 
+            flex-direction: column; 
+            background: transparent;
+            padding: 10px; 
+            overflow: hidden; 
+            position: relative; 
+        }
+
+        /* Element Plus 主题覆盖 */
+        html.dark, html.light {
+            --el-bg-color: var(--bg-primary);
+            --el-bg-color-overlay: var(--bg-card);
+            --el-text-color-primary: var(--text-primary);
+            --el-text-color-regular: var(--text-secondary);
+            --el-border-color: var(--border-color);
+            --el-border-color-light: var(--border-color);
+            --el-fill-color-blank: var(--input-bg);
+            --el-color-primary: var(--accent);
+            --el-color-danger: var(--up-color);
+            --el-color-success: var(--down-color);
+            --el-color-warning: var(--warning);
+        }
+
+        /* 输入框样式统一 */
+        .el-input__wrapper {
+            background-color: var(--input-bg) !important;
+            border: 1px solid var(--input-border) !important;
+            box-shadow: none !important;
+            border-radius: 4px;
+        }
+        .el-input__inner {
+            color: var(--text-primary) !important;
+        }
+        .el-date-editor .el-input__wrapper {
+            background-color: var(--input-bg) !important;
+        }
+
+        /* 控制栏 - 重新布局 */
+        .control-bar {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        /* 第一行：标题 + 休市 + 右侧按钮组 */
+        .row1 {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .row1-left {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .row1-left h2 {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--accent);
+            margin: 0;
+        }
+        .market-status {
+            font-size: 11px;
+            color: var(--text-secondary);
+            background: var(--bg-row);
+            padding: 2px 6px;
+            border-radius: 10px;
+        }
+        .row1-right {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .theme-btn, .info-btn {
+            padding: 4px 8px !important;
+            font-size: 11px !important;
+        }
+        .theme-btn .icon, .info-btn .icon {
+            margin-right: 2px;
+        }
+
+        /* 第二行：代码输入 + 添加按钮 */
+        .row2 {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .row2 .el-input {
+            flex: 1;
+        }
+
+        /* 第三行：四个操作按钮 */
+        .row3 {
+            display: flex;
+            gap: 6px;
+            justify-content: space-between;
+        }
+        .row3 .el-button {
+            flex: 1;
+            padding: 6px 0;
+            font-size: 11px;
+        }
+        .row3 .el-button .icon {
+            margin-right: 2px;
+        }
+
+        /* 指数卡片区域 */
+        .index-section {
+            flex-shrink: 0;
+            margin-bottom: 10px;
+            background: transparent;
+            border-radius: 8px;
+        }
+        .index-header-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+            padding: 0 2px;
+        }
+        .index-header-bar .title {
+            font-weight: 600;
+            color: var(--accent);
+            font-size: 13px;
+        }
+        .index-toggle-btn {
+            padding: 2px 8px;
+            font-size: 11px;
+        }
+        .index-cards-wrapper {
+            width: 100%;
+            overflow-x: auto;
+            overflow-y: hidden;
+            -webkit-overflow-scrolling: touch;
+            transition: max-height 0.2s;
+        }
+        .index-cards-wrapper.collapsed {
+            display: none;
+        }
+        .index-cards-scroll {
+            display: flex;
+            gap: 10px;
+            padding: 2px 0 4px 0;
+        }
+        .index-card {
+            flex: 0 0 auto;
+            width: 280px;
+            height: 230px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        }
+        .index-header {
+            height: 28px;
+            line-height: 28px;
+            padding: 0 8px;
+            background: var(--bg-row);
+            border-top-left-radius: 7px;
+            border-top-right-radius: 7px;
+            font-weight: 600;
+            font-size: 13px;
+            color: var(--accent);
+            border-bottom: 1px solid var(--border-color);
+        }
+        .index-chart {
+            flex: 1;
+            min-height: 90px;
+            background: var(--bg-row);
+            overflow: hidden;
+            cursor: pointer;
+        }
+        .index-chart img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: var(--bg-row);
+            filter: var(--chart-filter);
+        }
+        .index-info {
+            height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: space-around;
+            padding: 0 4px;
+            border-top: 1px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-card);
+        }
+        .info-item {
+            text-align: center;
+        }
+        .info-label {
+            font-size: 9px;
+            color: var(--text-secondary);
+        }
+        .info-value {
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .index-drag-handle {
+            height: 22px;
+            line-height: 22px;
+            text-align: center;
+            font-size: 11px;
+            color: var(--text-secondary);
+            background: var(--bg-row);
+            border-bottom-left-radius: 7px;
+            border-bottom-right-radius: 7px;
+            cursor: grab;
+        }
+
+        /* 个股列表头部（含清空按钮） */
+        .list-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+            padding: 0 2px;
+        }
+        .list-header .title {
+            font-weight: 600;
+            color: var(--accent);
+            font-size: 13px;
+        }
+        .clear-all-btn {
+            padding: 2px 8px;
+            font-size: 11px;
+            color: var(--up-color) !important;
+            border-color: var(--up-color) !important;
+        }
+
+        /* 移动端个股卡片列表 */
+        .mobile-stock-list {
+            flex: 1;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            padding-bottom: 8px;
+        }
+        .stock-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            margin-bottom: 12px;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .card-title {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .market-tag {
+            font-size: 10px;
+            padding: 2px 4px;
+            border-radius: 4px;
+            background: var(--bg-row);
+            color: var(--accent);
+            border: 1px solid var(--border-color);
+        }
+        .stock-code {
+            color: #60a5fa;
+            font-weight: 600;
+            font-size: 13px;
+        }
+        .stock-name {
+            font-weight: 500;
+            font-size: 13px;
+        }
+        .delete-btn {
+            color: var(--up-color);
+            cursor: pointer;
+            padding: 4px;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+        }
+        .delete-btn .icon {
+            margin-right: 2px;
+        }
+
+        .price-row {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .price-now {
+            font-size: 18px;
+            font-weight: 700;
+        }
+        .price-change {
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .advice-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: 500;
+            font-size: 11px;
+            background: rgba(122,139,163,0.2);
+            color: var(--text-secondary);
+        }
+        .advice-badge.buy { background: rgba(255,77,79,0.2); color: var(--up-color); }
+        .advice-badge.sell { background: rgba(82,196,26,0.2); color: var(--down-color); }
+        .advice-badge.hold { background: rgba(74,158,255,0.2); color: var(--accent); }
+        .advice-badge.warn { background: rgba(250,140,22,0.2); color: var(--warning); }
+
+        /* 数据网格：4列（用于技术指标） */
+        .data-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 6px;
+            margin-top: 6px;
+        }
+        .data-item {
+            background: var(--bg-row);
+            border-radius: 4px;
+            padding: 4px 2px;
+            text-align: center;
+        }
+        .data-label {
+            font-size: 8px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+        .data-value {
+            font-size: 11px;
+            font-weight: 600;
+            line-height: 1.4;
+        }
+
+        /* 仓位信息网格：3列 */
+        .holdings-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px;
+            margin-top: 6px;
+        }
+        .holdings-item {
+            background: var(--bg-row);
+            border-radius: 4px;
+            padding: 4px 2px;
+            text-align: center;
+        }
+        .holdings-label {
+            font-size: 8px;
+            color: var(--text-secondary);
+        }
+        .holdings-value {
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        /* 输入网格：4列 */
+        .input-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 6px;
+            margin-top: 6px;
+        }
+        .input-item {
+            display: flex;
+            flex-direction: column;
+        }
+        .input-item label {
+            font-size: 8px;
+            color: var(--text-secondary);
+            margin-bottom: 2px;
+            white-space: nowrap;
+        }
+        .input-item .el-input__wrapper {
+            padding: 0 4px;
+            height: 26px;
+            background-color: var(--input-bg) !important;
+        }
+        .input-item .el-input__inner {
+            font-size: 11px;
+            text-align: center;
+        }
+
+        .up-text { color: var(--up-color); }
+        .down-text { color: var(--down-color); }
+
+        /* 放大对话框图片 */
+        .enlarge-chart-img {
+            width: 100%;
+            height: 300px;
+            object-fit: contain;
+            filter: var(--chart-filter);
+        }
+
+        .hidden-input { display: none; }
+    </style>
+</head>
+<body>
+<div id="app">
+    <el-dialog v-model="showDisclaimer" title="⚠️ 免责声明" width="90%" :close-on-click-modal="false" :show-close="false" class="disclaimer-dialog" center>
+        <div style="font-size: 14px; line-height: 1.6; color: var(--text-primary);">
+            <p style="margin-bottom: 12px;">1. 本工具仅为个人复盘与数据测算辅助工具，不构成投资建议。</p>
+            <p>2. 股市有风险，交易需谨慎。盈亏自负。</p>
+        </div>
+        <template #footer>
+            <el-button type="danger" @click="acceptDisclaimer">我已阅读并知晓</el-button>
+        </template>
+    </el-dialog>
+
+    <el-config-provider :locale="locale">
+        <div class="app-container">
+            <!-- 控制栏（新布局） -->
+            <div class="control-bar">
+                <!-- 第一行：标题 + 休市 + 右侧深色切换和说明 -->
+                <div class="row1">
+                    <div class="row1-left">
+                        <h2>牛股计算器</h2>
+                        <span class="market-status">{{ isTradingTime() ? '盘中' : '休市' }}</span>
+                    </div>
+                    <div class="row1-right">
+                        <el-button size="small" class="theme-btn" @click="toggleTheme" :title="isDark ? '切换浅色' : '切换深色'">
+                            <svg class="icon"><use :href="isDark ? '#icon-sun' : '#icon-moon'"></use></svg>
+                            <span>{{ isDark ? '浅色' : '深色' }}</span>
+                        </el-button>
+                        <el-button size="small" class="info-btn" @click="showInfo = true">
+                            <svg class="icon"><use href="#icon-info"></use></svg>
+                            <span>说明</span>
+                        </el-button>
+                    </div>
+                </div>
+
+                <!-- 第二行：代码输入 + 添加 -->
+                <div class="row2">
+                    <el-input v-model="inputCodes" size="small" placeholder="代码,如300308" @keyup.enter="addNewCodes"></el-input>
+                    <el-button type="primary" size="small" @click="addNewCodes" :loading="loading">
+                        <svg class="icon"><use href="#icon-add"></use></svg> 添加
+                    </el-button>
+                </div>
+
+                <!-- 第三行：四个操作按钮（刷新、日线、导入、导出） -->
+                <div class="row3">
+                    <el-button size="small" @click="refreshAllPrices()" :loading="loading">
+                        <svg class="icon"><use href="#icon-refresh"></use></svg> 刷新
+                    </el-button>
+                    <el-button size="small" @click="toggleChartType">
+                        <svg class="icon"><use href="#icon-chart"></use></svg> {{ chartType === 'min' ? '日线' : '分时' }}
+                    </el-button>
+                    <el-button size="small" @click="triggerImport">
+                        <svg class="icon"><use href="#icon-import"></use></svg> 导入
+                    </el-button>
+                    <el-button size="small" @click="exportData">
+                        <svg class="icon"><use href="#icon-export"></use></svg> 导出
+                    </el-button>
+                </div>
+
+                <input type="file" ref="fileInput" class="hidden-input" accept=".csv" @change="importData">
+            </div>
+
+            <!-- 指数卡片区域（可折叠） -->
+            <div class="index-section">
+                <div class="index-header-bar">
+                    <span class="title">市场指数</span>
+                    <el-button size="small" class="index-toggle-btn" @click="toggleIndexCards">
+                        <svg class="icon"><use href="#icon-up" :style="{ transform: showIndexCards ? 'rotate(180deg)' : 'none' }"></use></svg>
+                        {{ showIndexCards ? '收起' : '展开' }}
+                    </el-button>
+                </div>
+                <div class="index-cards-wrapper" :class="{ collapsed: !showIndexCards }">
+                    <div ref="indexCardsContainer" class="index-cards-scroll">
+                        <div v-for="(idx, i) in indices" :key="idx.code" class="index-card" :data-index="i">
+                            <div class="index-header">{{ idx.name }}</div>
+                            <div class="index-chart" @click="openEnlargeDialog(idx.code, idx.name)">
+                                <img :src="getIndexChartUrl(idx.code)" @error="(e) => handleIndexImageError(e, idx.name)" alt="">
+                            </div>
+                            <div class="index-info">
+                                <div class="info-item">
+                                    <div class="info-label">最新</div>
+                                    <div class="info-value" :class="getPriceClass(idx.change)">{{ idx.now }}</div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">涨跌</div>
+                                    <div class="info-value" :class="getPriceClass(idx.change)">{{ idx.change }}</div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">涨幅</div>
+                                    <div class="info-value" :class="getPriceClass(idx.change)">{{ idx.changePercent }}%</div>
+                                </div>
+                            </div>
+                            <div class="index-drag-handle">☰ 拖动排序</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 个股列表头部（含清空按钮） -->
+            <div class="list-header">
+                <span class="title">个股列表 ({{ tableData.length }})</span>
+                <el-button size="small" class="clear-all-btn" type="danger" plain @click="clearAll">
+                    <svg class="icon"><use href="#icon-delete"></use></svg> 清空列表
+                </el-button>
+            </div>
+
+            <!-- 移动端个股卡片列表（全信息 + 仓位） -->
+            <div class="mobile-stock-list">
+                <div v-for="(item, index) in tableData" :key="item.fullCode" class="stock-card">
+                    <!-- 头部：代码、名称、删除按钮 -->
+                    <div class="card-header">
+                        <div class="card-title">
+                            <span class="market-tag">{{ getMarket(item.fullCode).toUpperCase() }}</span>
+                            <span class="stock-code">{{ item.fullCode }}</span>
+                            <span class="stock-name">{{ item.name }}</span>
+                        </div>
+                        <div class="delete-btn" @click="removeItem(index)">
+                            <svg class="icon"><use href="#icon-delete"></use></svg> 删除
+                        </div>
+                    </div>
+                    
+                    <!-- 价格行：现价、涨幅、操作建议 -->
+                    <div class="price-row">
+                        <span class="price-now" :class="getPriceClass(item.changePct)">{{ formatNum(item.now, item) }}</span>
+                        <span class="price-change" :class="getPriceClass(item.changePct)">{{ formatPct(item.changePct) }}</span>
+                        <span :class="['advice-badge', item.adviceClass === 'suggestion-buy' ? 'buy' : item.adviceClass === 'suggestion-sell' ? 'sell' : item.adviceClass === 'suggestion-hold' ? 'hold' : item.adviceClass === 'suggestion-warn' ? 'warn' : '']">{{ item.signal }}</span>
+                    </div>
+                    
+                    <!-- 仓位信息：仓位(股)、持仓市值、仓位占比 -->
+                    <div class="holdings-grid">
+                        <div class="input-item">
+                            <label>仓位(股)</label>
+                            <el-input v-model.number="item.holdings" size="small" @change="calculateRow(item)"></el-input>
+                        </div>
+                        <div class="holdings-item">
+                            <div class="holdings-label">持仓市值</div>
+                            <div class="holdings-value">{{ formatMarketValue(item) }}</div>
+                        </div>
+                        <div class="holdings-item">
+                            <div class="holdings-label">仓位占比</div>
+                            <div class="holdings-value">{{ formatPosition(item) }}</div>
+                        </div>
+                    </div>
+                    
+                    <!-- 数据网格：12项技术指标 -->
+                    <div class="data-grid">
+                        <div class="data-item">
+                            <div class="data-label">压力</div>
+                            <div class="data-value up-text">{{ formatNum(item.topLine, item) }}</div>
+                        </div>
+                        <div class="data-item">
+                            <div class="data-label">支撑</div>
+                            <div class="data-value down-text">{{ formatNum(item.bottomLine, item) }}</div>
+                        </div>
+                        <div class="data-item">
+                            <div class="data-label">0.382</div>
+                            <div class="data-value">{{ formatNum(item.f382, item) }}</div>
+                        </div>
+                        <div class="data-item">
+                            <div class="data-label">0.618</div>
+                            <div class="data-value">{{ formatNum(item.f618, item) }}</div>
+                        </div>
+                        <div class="data-item">
+                            <div class="data-label">0.786</div>
+                            <div class="data-value">{{ formatNum(item.f786, item) }}</div>
+                        </div>
+                        <div class="data-item">
+                            <div class="data-label">波段顶</div>
+                            <div class="data-value">{{ formatNum(item.high, item) }}</div>
+                        </div>
+                        <div class="data-item">
+                            <div class="data-label">波段底</div>
+                            <div class="data-value">{{ formatNum(item.low, item) }}</div>
+                        </div>
+                        <div class="data-item">
+                            <div class="data-label">成本价</div>
+                            <div class="data-value">{{ item.cost ? formatNum(item.cost, item) : '--' }}</div>
+                        </div>
+                        <div class="data-item">
+                            <div class="data-label">分时均价</div>
+                            <div class="data-value">{{ formatNum(item.avg, item) }}</div>
+                        </div>
+                        <div class="data-item">
+                            <div class="data-label">建仓日</div>
+                            <div class="data-value">{{ item.buyDate ? item.buyDate.slice(5) : '--' }}</div>
+                        </div>
+                        <div class="data-item">
+                            <div class="data-label">持有</div>
+                            <div class="data-value">{{ item.cost > 0 ? getHoldDays(item.buyDate) + '天' : '--' }}</div>
+                        </div>
+                        <div class="data-item">
+                            <div class="data-label">新高日</div>
+                            <div class="data-value">{{ item.highDate ? item.highDate.slice(5) : '--' }}</div>
+                        </div>
+                    </div>
+                    
+                    <!-- 输入网格：波段顶/底/成本/建仓日期（波段顶使用 handleHighChange） -->
+                    <div class="input-grid">
+                        <div class="input-item">
+                            <label>波段顶</label>
+                            <el-input v-model="item.high" size="small" @change="handleHighChange(item)"></el-input>
+                        </div>
+                        <div class="input-item">
+                            <label>波段底</label>
+                            <el-input v-model="item.low" size="small" @change="calculateRow(item)"></el-input>
+                        </div>
+                        <div class="input-item">
+                            <label>成本价</label>
+                            <el-input v-model="item.cost" size="small" @change="calculateRow(item)"></el-input>
+                        </div>
+                        <div class="input-item">
+                            <label>建仓日</label>
+                            <el-date-picker v-model="item.buyDate" type="date" size="small" value-format="YYYY-MM-DD" style="width:100%" @change="calculateRow(item)" :prefix-icon="null"></el-date-picker>
+                        </div>
+                    </div>
+                </div>
+                <div v-if="tableData.length === 0" style="text-align: center; color: var(--text-secondary); margin-top: 50px;">暂无股票，请添加</div>
+            </div>
+        </div>
+    </el-config-provider>
+
+    <!-- 指数放大对话框 -->
+    <el-dialog v-model="showEnlargeDialog" :title="enlargeName + ' (' + enlargeCode + ')'" width="90%" destroy-on-close>
+        <div style="text-align: center;">
+            <img :src="`https://image.sinajs.cn/newchart/${enlargeChartType}/n/${enlargeCode}.gif?t=${enlargeChartTs}`" 
+                 class="enlarge-chart-img" @error="handleEnlargeImageError" alt="">
+        </div>
+        <template #footer>
+            <el-button @click="toggleEnlargeChartType">切换{{ enlargeChartType === 'min' ? '日线' : '分时' }}</el-button>
+            <el-button type="primary" @click="showEnlargeDialog = false">关闭</el-button>
+        </template>
+    </el-dialog>
+</div>
+
+<script>
+const { createApp, ref, onMounted, reactive, computed, nextTick, onUnmounted } = Vue;
+const { ElMessage, ElMessageBox } = ElementPlus;
+const App = {
+    setup() {
+        const locale = ElementPlusLocaleZhCn;
+        const STORAGE_KEY = 'phi_batch_table_v7_mobile'; // 更新存储键，避免冲突
+        const DISCLAIMER_KEY = 'phi_disclaimer_accepted';
+        const inputCodes = ref("");
+        const tableData = ref([]);
+        const loading = ref(false);
+        const fileInput = ref(null);
+        const lastRefreshTime = ref('');
+        const showDisclaimer = ref(false);
+        const chartType = ref('min');
+        const chartTs = ref(Date.now());
+        const isDark = ref(true);
+        const showIndexCards = ref(true);
+        const showInfo = ref(false);
+        // 指数放大
+        const showEnlargeDialog = ref(false);
+        const enlargeCode = ref('');
+        const enlargeName = ref('');
+        const enlargeChartType = ref('min');
+        const enlargeChartTs = ref(Date.now());
+
+        let autoRefreshTimer = null;
+        let userSorted = false;
+
+        // 指数数据
+        const indices = ref([
+            { name: '沪指', code: 'sh000001', now: '--', change: '--', changePercent: '--' },
+            { name: '深指', code: 'sz399001', now: '--', change: '--', changePercent: '--' },
+            { name: '创指', code: 'sz399006', now: '--', change: '--', changePercent: '--' },
+            { name: '科创50', code: 'sh000688', now: '--', change: '--', changePercent: '--' }
+        ]);
+
+        const getIndexChartUrl = (code) => {
+            return `https://image.sinajs.cn/newchart/${chartType.value}/n/${code}.gif?t=${Date.now()}`;
+        };
+
+        const indexCardsContainer = ref(null);
+        let indexSortable = null;
+
+        const fetchIndices = () => {
+            const codes = indices.value.map(idx => idx.code).join(',');
+            if (!codes) return;
+            const oldScript = document.getElementById('jsonp-index');
+            if (oldScript) oldScript.remove();
+            const script = document.createElement('script');
+            script.id = 'jsonp-index';
+            script.src = `https://qt.gtimg.cn/q=${codes}`;
+            document.body.appendChild(script);
+            script.onload = () => {
+                indices.value.forEach(idx => {
+                    const dataStr = window[`v_${idx.code}`];
+                    if (dataStr) {
+                        const d = dataStr.split('~');
+                        if (d.length >= 33) {
+                            idx.now = parseFloat(d[3]).toFixed(2);
+                            idx.change = parseFloat(d[31]).toFixed(2);
+                            idx.changePercent = parseFloat(d[32]).toFixed(2);
+                        }
+                    }
+                });
+            };
+        };
+
+        const refreshIndices = () => fetchIndices();
+
+        const handleIndexImageError = (e, name) => {
+            e.target.src = 'data:image/svg+xml,%3Csvg...%3E';
+        };
+
+        const toggleChartType = () => {
+            chartType.value = chartType.value === 'min' ? 'daily' : 'min';
+            chartTs.value = Date.now();
+        };
+
+        const toggleTheme = () => {
+            const root = document.getElementById('theme-root');
+            root.classList.toggle('dark');
+            root.classList.toggle('light');
+            isDark.value = !isDark.value;
+        };
+        const toggleIndexCards = () => { showIndexCards.value = !showIndexCards.value; };
+
+        // 指数放大
+        const openEnlargeDialog = (code, name) => {
+            enlargeCode.value = code;
+            enlargeName.value = name;
+            enlargeChartType.value = chartType.value;
+            enlargeChartTs.value = Date.now();
+            showEnlargeDialog.value = true;
+        };
+        const toggleEnlargeChartType = () => {
+            enlargeChartType.value = enlargeChartType.value === 'min' ? 'daily' : 'min';
+            enlargeChartTs.value = Date.now();
+        };
+        const handleEnlargeImageError = (e) => {
+            e.target.src = 'data:image/svg+xml,%3Csvg...%3E';
+        };
+
+        const acceptDisclaimer = () => {
+            localStorage.setItem(DISCLAIMER_KEY, 'true');
+            showDisclaimer.value = false;
+        };
+
+        // ========== 新增仓位计算相关 ==========
+        // 计算总成本市值（用于仓位占比）
+        const totalCostValue = computed(() => {
+            return tableData.value.reduce((sum, item) => {
+                const cost = parseFloat(item.cost) || 0;
+                const holdings = parseFloat(item.holdings) || 0;
+                return sum + cost * holdings;
+            }, 0);
+        });
+
+        // 格式化持仓市值（基于成本价）
+        const formatMarketValue = (row) => {
+            const cost = parseFloat(row.cost) || 0;
+            const holdings = parseFloat(row.holdings) || 0;
+            return (cost * holdings).toFixed(2);
+        };
+
+        // 格式化仓位占比（基于总成本市值）
+        const formatPosition = (row) => {
+            const total = totalCostValue.value;
+            if (total === 0) return '0%';
+            const cost = parseFloat(row.cost) || 0;
+            const holdings = parseFloat(row.holdings) || 0;
+            const val = cost * holdings;
+            return ((val / total) * 100).toFixed(1) + '%';
+        };
+        // =====================================
+
+        const formatPct = (pct) => {
+            if (pct === undefined || pct === null) return '--';
+            const p = parseFloat(pct);
+            return (p > 0 ? '+' : '') + p.toFixed(2) + '%';
+        };
+
+        const formatNum = (val, row) => {
+            if (val === undefined || val === null || val === '') return '--';
+            const n = parseFloat(val);
+            if (isNaN(n)) return '--';
+            // ETF判断
+            const isEtf = row && row.fullCode && /^(5[168]|1[568]|50|58)/.test(row.fullCode.replace(/^(sh|sz|hk|bj)/,''));
+            const decimals = isEtf ? 3 : 2;
+            return n.toFixed(decimals);
+        };
+
+        const getPriceClass = (pct) => {
+            const p = parseFloat(pct);
+            if (p > 0) return 'up-text';
+            if (p < 0) return 'down-text';
+            return '';
+        };
+
+        const getMarket = (code) => {
+            if (code.startsWith('sh')) return 'sh';
+            if (code.startsWith('sz')) return 'sz';
+            if (code.startsWith('hk')) return 'hk';
+            return 'other';
+        };
+
+        const getHoldDays = (startDateStr) => {
+            if (!startDateStr) return 0;
+            const start = new Date(startDateStr);
+            const today = new Date();
+            start.setHours(0,0,0,0);
+            today.setHours(0,0,0,0);
+            if (start > today) return 1;
+            let days = 0, cur = new Date(start);
+            while (cur <= today) {
+                if (cur.getDay() !== 0 && cur.getDay() !== 6) days++;
+                cur.setDate(cur.getDate() + 1);
+            }
+            return days;
+        };
+
+        const isTradingTime = () => {
+            const now = new Date();
+            if (now.getDay() === 0 || now.getDay() === 6) return false;
+            const t = now.getHours() * 100 + now.getMinutes();
+            return (t >= 910 && t <= 1205) || (t >= 1255 && t <= 1605);
+        };
+
+        const saveToLocal = () => {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(tableData.value));
+        };
+
+        const sortData = () => {
+            if (!userSorted) {
+                tableData.value.sort((a,b) => (parseFloat(b.cost)>0?1:0) - (parseFloat(a.cost)>0?1:0));
+            }
+        };
+
+        // 处理波段顶手动修改
+        const handleHighChange = (row) => {
+            // 当用户手动修改波段顶时，更新高点日期为当天
+            row.highDate = new Date().toISOString().split('T')[0];
+            calculateRow(row);
+        };
+
+        const calculateRow = (row) => {
+            let now = parseFloat(row.now) || 0;
+            let cost = parseFloat(row.cost) || 0;
+            let low = parseFloat(row.low) || 0;
+            let high = parseFloat(row.high) || 0;
+            let avg = parseFloat(row.avg) || 0;
+
+            // 自动更新新高（现价突破前高）
+            if (now > high && high > 0) {
+                row.high = now;
+                high = now;
+                row.highDate = new Date().toISOString().split('T')[0];
+                row._isNewHigh = true;
+            } else {
+                row._isNewHigh = false;
+            }
+
+            const diff = high - low;
+            row.f382 = (high - diff * 0.382).toFixed(3);
+            row.f618 = (high - diff * 0.618).toFixed(3);
+            row.f786 = (high - diff * 0.786).toFixed(3);
+
+            const K = 0.98848;
+            if (avg > 0) {
+                row.topLine = (avg / K).toFixed(3);
+                row.bottomLine = (avg * K).toFixed(3);
+            } else { row.topLine = '0.00'; row.bottomLine = '0.00'; }
+
+            row.isBreakLow = false;
+
+            if (cost > 0) {
+                // 持仓模式
+                if (!row.buyDate) row.buyDate = new Date().toISOString().split('T')[0];
+                const holdDays = getHoldDays(row.buyDate);
+                const daysSinceHigh = row.highDate ? getHoldDays(row.highDate) : holdDays;
+                // 计算从高点回撤幅度
+                const retreat = high > 0 ? (high - now) / high : 0;
+
+                if (low > 0 && now < low * 0.97) {
+                    row.signal = '破底止损';
+                    row.adviceClass = 'suggestion-danger';
+                } else if (now <= cost * 0.94) {
+                    row.signal = '止损(-6%)';
+                    row.adviceClass = 'suggestion-danger';
+                } else if (daysSinceHigh >= 13 && high > 0 && !row._isNewHigh && retreat > 0.03) {
+                    // 时间证伪：超过13天且从高点回撤超过3%
+                    row.signal = '时间证伪';
+                    row.adviceClass = 'suggestion-warn';
+                } else if (row._isNewHigh || (now === high && high > 0)) {
+                    row.signal = '突破新高';
+                    row.adviceClass = 'suggestion-buy';
+                } else {
+                    row.signal = `持有(${holdDays}天)`;
+                    row.adviceClass = 'suggestion-hold';
+                }
+            } else {
+                // 观察模式
+                const f382 = parseFloat(row.f382), f618 = parseFloat(row.f618), f786 = parseFloat(row.f786);
+                const f500 = high - diff * 0.5;
+                if (low > 0 && now < low) {
+                    row.isBreakLow = true;
+                    row.signal = '破位严禁';
+                    row.adviceClass = 'suggestion-danger';
+                } else if (row._isNewHigh) {
+                    row.signal = '突破跟进';
+                    row.adviceClass = 'suggestion-buy';
+                } else if (low > 0) {
+                    if (now < f786) {
+                        row.signal = '放弃(极弱)';
+                        row.adviceClass = 'suggestion-观望';
+                    } else if (now < f618 * 0.99) {
+                        row.signal = '跌破618';
+                        row.adviceClass = 'suggestion-warn';
+                    } else if (now <= f500 * 1.02) {
+                        row.signal = '强防生死线';
+                        row.adviceClass = 'suggestion-hold';
+                    } else if (now <= f382 * 1.03) {
+                        row.signal = '常规买点';
+                        row.adviceClass = 'suggestion-buy';
+                    } else {
+                        row.signal = '高位观望';
+                        row.adviceClass = 'suggestion-观望';
+                    }
+                } else {
+                    row.signal = '观望';
+                    row.adviceClass = 'suggestion-观望';
+                }
+            }
+            saveToLocal();
+        };
+
+        const initIndexSortable = () => {
+            if (indexCardsContainer.value) {
+                indexSortable = Sortable.create(indexCardsContainer.value, {
+                    animation: 150,
+                    handle: '.index-drag-handle',
+                    ghostClass: 'sortable-ghost',
+                    onEnd: (evt) => {
+                        const { oldIndex, newIndex } = evt;
+                        if (oldIndex === newIndex) return;
+                        const moved = indices.value.splice(oldIndex, 1)[0];
+                        indices.value.splice(newIndex, 0, moved);
+                    }
+                });
+            }
+        };
+
+        const formatCode = (code) => {
+            code = code.trim().toLowerCase();
+            if (!code) return null;
+            if (/^(sh|sz|hk|bj)/.test(code)) return code;
+            if (/^\d+$/.test(code)) {
+                if (code.length <= 4 || (code.length===5 && code.startsWith('0'))) return 'hk'+code.padStart(5,'0');
+                if (code.length===6) {
+                    if (/^(5[168]|6)/.test(code)) return 'sh'+code;
+                    if (/^(1[568]|0|3)/.test(code)) return 'sz'+code;
+                    if (/^(4|8)/.test(code)) return 'bj'+code;
+                }
+            }
+            return code;
+        };
+
+        const fetchData = (codes, isAddition = true, isAuto = false) => {
+            if (codes.length === 0) return;
+            if (!isAuto) loading.value = true;
+            const queryStr = codes.join(',');
+            const oldScript = document.getElementById('jsonp-stock');
+            if (oldScript) oldScript.remove();
+            const script = document.createElement('script');
+            script.id = 'jsonp-stock';
+            script.src = `https://qt.gtimg.cn/q=${queryStr}`;
+            document.body.appendChild(script);
+            script.onload = () => {
+                codes.forEach(code => {
+                    const dataStr = window[`v_${code}`];
+                    if (dataStr) {
+                        const d = dataStr.split('~');
+                        const nowPrice = parseFloat(d[3]);
+                        const changePct = parseFloat(d[32]) || 0;
+                        const dayHigh = parseFloat(d[33]);
+                        const dayLow = parseFloat(d[34]);
+                        let turnover = parseFloat(d[37]);
+                        let volume = parseFloat(d[36]);
+                        let newAvg = 0;
+                        if (code.startsWith('hk')) newAvg = volume>0 ? turnover/volume : parseFloat(d[4]);
+                        else if (code.startsWith('sh68')||code.startsWith('bj')) newAvg = volume>0 ? (turnover*10000)/volume : parseFloat(d[4]);
+                        else newAvg = volume>0 ? (turnover*10000)/(volume*100) : parseFloat(d[4]);
+
+                        const idx = tableData.value.findIndex(item=>item.fullCode===code);
+                        if (idx > -1) {
+                            const item = tableData.value[idx];
+                            item.now = nowPrice;
+                            item.changePct = changePct;
+                            item.avg = parseFloat(newAvg.toFixed(3));
+                            calculateRow(item);
+                        } else if (isAddition) {
+                            const newItem = reactive({
+                                name:d[1], fullCode:code, now:nowPrice, changePct, cost:'',
+                                high: dayHigh||nowPrice, low: dayLow||nowPrice, buyDate:'', highDate:'',
+                                avg: parseFloat(newAvg.toFixed(3)), signal:'', f382:0, f618:0, f786:0, topLine:0, bottomLine:0,
+                                holdings: 0 // 新增仓位字段
+                            });
+                            calculateRow(newItem);
+                            tableData.value.unshift(newItem);
+                        }
+                    }
+                });
+                if (!isAuto) loading.value = false;
+                lastRefreshTime.value = new Date().toLocaleTimeString();
+                saveToLocal();
+                if (isAddition) inputCodes.value = "";
+            };
+        };
+
+        const addNewCodes = () => {
+            const codes = inputCodes.value.split(/[,\s\n]/).map(c=>formatCode(c)).filter(c=>c);
+            if (codes.length>0) fetchData(codes, true);
+            else ElMessage.warning('请输入代码');
+        };
+
+        const refreshAllPrices = (isAuto = false) => {
+            const currentCodes = tableData.value.map(item=>item.fullCode);
+            if (currentCodes.length>0) fetchData(currentCodes, false, isAuto);
+            refreshIndices();
+            chartTs.value = Date.now();
+        };
+
+        const removeItem = (index) => {
+            ElMessageBox.confirm('确认删除?','提示').then(()=>{
+                tableData.value.splice(index,1);
+                saveToLocal();
+            }).catch(()=>{});
+        };
+
+        const clearAll = () => {
+            ElMessageBox.confirm('清空所有数据?','警告').then(()=>{
+                tableData.value = [];
+                saveToLocal();
+            }).catch(()=>{});
+        };
+
+        const triggerImport = () => fileInput.value.click();
+        const exportData = () => {
+            let csv = '代码,名称,最新价,阶段顶部,阶段底部,均价,成本价,建仓日期,新高日期,仓位\n';
+            tableData.value.forEach(row => {
+                csv += `${row.fullCode},${row.name},${row.now},${row.high},${row.low},${row.avg},${row.cost},${row.buyDate||''},${row.highDate||''},${row.holdings||0}\n`;
+            });
+            const blob = new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8;'});
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = "策略备份.csv";
+            link.click();
+        };
+        const importData = (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const text = e.target.result;
+                const lines = text.split('\n').filter(l=>l.trim());
+                if (lines.length <= 1) return;
+                const header = lines[0].split(',');
+                const hasHoldings = header.includes('仓位') || header.length >= 10;
+                lines.slice(1).forEach(line => {
+                    const cols = line.split(',');
+                    if (cols.length>=2) {
+                        const code = formatCode(cols[0]);
+                        if (!code) return;
+                        const itemData = {
+                            fullCode:code, name:cols[1], now:parseFloat(cols[2])||0,
+                            high:parseFloat(cols[3])||0, low:parseFloat(cols[4])||0, avg:parseFloat(cols[5])||0,
+                            cost:cols[6], buyDate:cols[7], highDate:cols[8],
+                            holdings: hasHoldings ? parseFloat(cols[9]) || 0 : 0
+                        };
+                        const idx = tableData.value.findIndex(t=>t.fullCode===code);
+                        if (idx>-1) {
+                            Object.assign(tableData.value[idx], itemData);
+                            calculateRow(tableData.value[idx]);
+                        } else {
+                            const newItem = reactive({...itemData, changePct:0, signal:'', f382:0, f618:0, f786:0, topLine:0, bottomLine:0});
+                            calculateRow(newItem);
+                            tableData.value.unshift(newItem);
+                        }
+                    }
+                });
+                sortData();
+                ElMessage.success('导入成功');
+                refreshAllPrices();
+                event.target.value='';
+            };
+            reader.readAsText(file, 'UTF-8');
+        };
+
+        onMounted(() => {
+            if (!localStorage.getItem(DISCLAIMER_KEY)) showDisclaimer.value = true;
+            const cached = localStorage.getItem(STORAGE_KEY);
+            if (cached) {
+                try { tableData.value = JSON.parse(cached).map(item=>reactive(item)); sortData(); refreshAllPrices(); } catch(e){}
+            }
+            nextTick(() => { initIndexSortable(); });
+            refreshAllPrices();
+            autoRefreshTimer = setInterval(() => { if (isTradingTime()) refreshAllPrices(true); }, 5000);
+        });
+
+        onUnmounted(() => { clearInterval(autoRefreshTimer); if (indexSortable) indexSortable.destroy(); });
+
+        return {
+            locale, inputCodes, tableData, loading, fileInput,
+            addNewCodes, refreshAllPrices, calculateRow, handleHighChange, removeItem, clearAll, lastRefreshTime,
+            triggerImport, exportData, importData, getPriceClass, formatPct, formatNum, isTradingTime,
+            showDisclaimer, acceptDisclaimer,
+            indices, indexCardsContainer, handleIndexImageError,
+            chartType, chartTs, toggleChartType,
+            isDark, toggleTheme,
+            showIndexCards, toggleIndexCards, getIndexChartUrl,
+            showEnlargeDialog, enlargeCode, enlargeName, enlargeChartType, enlargeChartTs,
+            openEnlargeDialog, toggleEnlargeChartType, handleEnlargeImageError,
+            getMarket, getHoldDays,
+            // 新增仓位相关
+            formatMarketValue, formatPosition
+        };
+    }
+};
+const app = createApp(App);
+app.use(ElementPlus);
+app.mount('#app');
+</script>
+</body>
+</html>

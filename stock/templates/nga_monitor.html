@@ -10,6 +10,39 @@
         .task-row:hover { background-color: #f8f9fa; }
         .status-badge { min-width: 5rem; }
         .back-link { margin-bottom: 1rem; }
+        .toolbar { margin-bottom: 1rem; }
+        /* 表格横向滚动，保证小屏能看到操作列 */
+        #taskList .table-responsive {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        #taskList .table { min-width: 800px; }
+        /* 操作列粘性靠右，横向滚动时仍可见 */
+        #taskList .table th:last-child,
+        #taskList .table td:last-child {
+            position: sticky;
+            right: 0;
+            background: var(--bs-table-bg, #fff);
+            box-shadow: -4px 0 8px -2px rgba(0,0,0,.08);
+            white-space: nowrap;
+        }
+        #taskList .table thead th:last-child { z-index: 2; }
+        #taskList .table tbody td:last-child { z-index: 1; }
+        #taskList .table-dark th:last-child,
+        #taskList .table-dark td:last-child { background: var(--bs-table-bg); }
+        #taskList .table .task-row:hover td:last-child { background: #f8f9fa; }
+        /* 操作按钮组：小屏不换行、可点击 */
+        #taskList .table .task-actions { display: inline-flex; flex-wrap: nowrap; gap: 4px; align-items: center; }
+        /* 小屏卡片布局 */
+        .nga-task-cards .card { min-width: 0; }
+        .nga-task-cards .task-actions-wrap { flex-shrink: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+        @media (max-width: 767.98px) {
+            #taskList .table-responsive { display: none !important; }
+            #taskList .nga-task-cards { display: block !important; }
+        }
+        @media (min-width: 768px) {
+            #taskList .nga-task-cards { display: none !important; }
+        }
     </style>
 </head>
 <body>
@@ -22,30 +55,120 @@
 
         <h2 class="mb-3">NGA 监控任务</h2>
         <p class="text-muted small mb-4">
-            开启后，程序启动时会自动监控该帖子；关闭后不再监控。修改开关将在<strong>下次启动程序</strong>时生效。
+            在此页面管理所有 NGA 帖子监控。开启后，程序启动时会自动监控该帖子；关闭后不再监控。修改将在<strong>下次启动程序</strong>时生效。
         </p>
 
         <div class="card">
             <div class="card-body">
+                <div class="toolbar d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <span></span>
+                    <button type="button" class="btn btn-primary" id="btnAdd" onclick="openModal()">
+                        <i class="bi bi-plus-lg"></i> 添加监控帖子
+                    </button>
+                </div>
                 <div id="loading" class="text-center py-4 text-muted">
                     <span class="spinner-border spinner-border-sm me-2"></span>加载中...
                 </div>
                 <div id="taskList" style="display: none;"></div>
                 <div id="emptyTip" class="text-muted text-center py-4" style="display: none;">
-                    暂无监控任务，请先在 configs/nga.yaml 中配置 threads 并启动一次程序同步到数据库。
+                    暂无监控任务，点击上方「添加监控帖子」添加。
                 </div>
                 <div id="errorTip" class="alert alert-danger" style="display: none;"></div>
             </div>
         </div>
     </div>
 
+    <!-- 添加/编辑弹窗 -->
+    <div class="modal fade" id="taskModal" tabindex="-1" aria-labelledby="taskModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="taskModalLabel">添加监控帖子</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="taskForm">
+                        <input type="hidden" id="formTid" name="tid" />
+                        <div class="mb-3" id="wrapTid">
+                            <label for="formTidInput" class="form-label">帖子 ID (tid) <span class="text-danger">*</span></label>
+                            <input type="number" class="form-control" id="formTidInput" required placeholder="例如 45974302" min="1" />
+                            <div class="form-text">NGA 帖子链接中的 tid 数字，如 read.php?tid=45974302 中的 45974302</div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="formName" class="form-label">帖子备注名</label>
+                            <input type="text" class="form-control" id="formName" placeholder="例如：狼大 26 年主帖子" />
+                        </div>
+                        <div class="mb-3">
+                            <label for="formWatchAuthors" class="form-label">关注作者 ID</label>
+                            <textarea class="form-control" id="formWatchAuthors" rows="2" placeholder="多个用英文逗号分隔，例如：150058,123456。留空则监控该帖所有发言"></textarea>
+                        </div>
+                        <div class="mb-3">
+                            <label for="formMessageGroup" class="form-label">消息群组</label>
+                            <select class="form-select" id="formMessageGroup">
+                                <option value="0">-- 请选择 --</option>
+                            </select>
+                        </div>
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" id="formAutoRun" checked />
+                            <label class="form-check-label" for="formAutoRun">程序启动后自动运行监控</label>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="btnSaveModal">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        let messageGroups = [];
+        let taskModalEl = null;
+        let taskModal = null;
+        let currentTasks = [];
+
+        function htmlEsc(str) {
+            if (str == null) return '';
+            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        function getWatchStrSafe(t, forTable) {
+            var ids = Array.isArray(t.watch_author_ids) ? t.watch_author_ids : [];
+            if (ids.length === 0) return forTable ? '<span class="text-muted">全部</span>' : '全部';
+            var parts = ids.slice(0, 3).map(function(id) { return String(id); });
+            var text = parts.join(', ') + (ids.length > 3 ? ' 等' + ids.length + '人' : '');
+            return htmlEsc(text);
+        }
+
+        function loadMessageGroups() {
+            return fetch('/api/nga_message_groups')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success && data.groups) {
+                        messageGroups = data.groups;
+                    }
+                })
+                .catch(() => {});
+        }
+
+        function fillGroupSelect(selectEl) {
+            selectEl.innerHTML = '<option value="0">-- 请选择 --</option>';
+            messageGroups.forEach(g => {
+                const opt = document.createElement('option');
+                opt.value = g.group_id;
+                opt.textContent = '群组 ' + g.group_id + ' (' + (g.chat_list || []).join(', ') + ')';
+                selectEl.appendChild(opt);
+            });
+        }
+
         function loadTasks() {
             const loading = document.getElementById('loading');
             const taskList = document.getElementById('taskList');
             const emptyTip = document.getElementById('emptyTip');
             const errorTip = document.getElementById('errorTip');
+            const toolbar = document.querySelector('.toolbar');
 
             loading.style.display = 'block';
             taskList.style.display = 'none';
@@ -63,11 +186,15 @@
                     }
                     const tasks = data.tasks || [];
                     if (tasks.length === 0) {
+                        currentTasks = [];
                         emptyTip.style.display = 'block';
+                        toolbar.style.visibility = 'visible';
                         return;
                     }
+                    currentTasks = tasks;
                     renderTasks(tasks);
                     taskList.style.display = 'block';
+                    toolbar.style.visibility = 'visible';
                 })
                 .catch(err => {
                     loading.style.display = 'none';
@@ -77,67 +204,173 @@
         }
 
         function renderTasks(tasks) {
-            const html = `
-                <div class="table-responsive">
-                    <table class="table table-hover align-middle">
-                        <thead>
-                            <tr>
-                                <th>帖子名称</th>
-                                <th>帖子 ID (tid)</th>
-                                <th>消息群组</th>
-                                <th>运行状态</th>
-                                <th>操作</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${tasks.map(t => `
-                                <tr class="task-row" data-tid="${t.tid}">
-                                    <td>${escapeHtml(t.name || '-')}</td>
-                                    <td><code>${t.tid}</code></td>
-                                    <td>${escapeHtml(String(t.message_group_id ?? ''))}</td>
-                                    <td>
-                                        <span class="badge status-badge ${t.auto_run ? 'bg-success' : 'bg-secondary'}">
-                                            ${t.auto_run ? '已开启' : '已关闭'}
-                                        </span>
-                                    </td>
-                                    <td>
-                                        <button class="btn btn-sm ${t.auto_run ? 'btn-warning' : 'btn-success'}" 
-                                                onclick="toggleTask(${t.tid})" 
-                                                title="${t.auto_run ? '点击关闭' : '点击开启'}">
-                                            ${t.auto_run ? '关闭' : '开启'}
-                                        </button>
-                                    </td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            `;
-            document.getElementById('taskList').innerHTML = html;
+            var tableHtml = '<div class="table-responsive">' +
+                '<table class="table table-hover align-middle">' +
+                '<thead><tr><th>帖子名称</th><th>帖子 ID (tid)</th><th>关注作者</th><th>消息群组</th><th>运行状态</th><th>操作</th></tr></thead>' +
+                '<tbody>' +
+                tasks.map(function(t) {
+                    var watchStr = getWatchStrSafe(t, true);
+                    var nameEsc = htmlEsc(t.name || '');
+                    var tidNum = parseInt(t.tid, 10) || 0;
+                    var msgGroupEsc = htmlEsc(String(t.message_group_id ?? ''));
+                    return '<tr class="task-row" data-tid="' + tidNum + '">' +
+                        '<td>' + nameEsc + '</td>' +
+                        '<td><code>' + tidNum + '</code></td>' +
+                        '<td>' + watchStr + '</td>' +
+                        '<td>' + msgGroupEsc + '</td>' +
+                        '<td><span class="badge status-badge ' + (t.auto_run ? 'bg-success' : 'bg-secondary') + '">' + (t.auto_run ? '已开启' : '已关闭') + '</span></td>' +
+                        '<td><div class="task-actions">' +
+                        '<button class="btn btn-sm btn-outline-primary" onclick="editTask(' + tidNum + ')" title="编辑"><i class="bi bi-pencil"></i></button>' +
+                        '<button class="btn btn-sm ' + (t.auto_run ? 'btn-warning' : 'btn-success') + '" onclick="toggleTask(' + tidNum + ')" title="' + (t.auto_run ? '点击关闭' : '点击开启') + '">' + (t.auto_run ? '关闭' : '开启') + '</button>' +
+                        '<a class="btn btn-sm btn-outline-secondary" href="/nga_floors/' + tidNum + '" target="_blank" title="查看已抓取楼层"><i class="bi bi-list"></i> 楼层</a>' +
+                        '<button class="btn btn-sm btn-outline-danger" onclick="deleteTask(' + tidNum + ')" title="删除"><i class="bi bi-trash"></i></button>' +
+                        '</div></td></tr>';
+                }).join('') +
+                '</tbody></table></div>';
+
+            var cardHtml = '<div class="nga-task-cards" style="display: none;">' +
+                tasks.map(function(t) {
+                    var watchStr = getWatchStrSafe(t, false);
+                    var nameEsc = htmlEsc(t.name || '');
+                    var tidNum = parseInt(t.tid, 10) || 0;
+                    var msgGroupEsc = htmlEsc(String(t.message_group_id ?? ''));
+                    return '<div class="card mb-2 task-row" data-tid="' + tidNum + '">' +
+                        '<div class="card-body py-3">' +
+                        '<div class="d-flex flex-column flex-sm-row justify-content-between align-items-start gap-2">' +
+                        '<div class="min-w-0 flex-grow-1">' +
+                        '<h6 class="card-title mb-1">' + nameEsc + '</h6>' +
+                        '<p class="mb-1 small text-muted"><code>' + tidNum + '</code> · 关注: ' + watchStr + ' · 群组 ' + msgGroupEsc + '</p>' +
+                        '<span class="badge status-badge ' + (t.auto_run ? 'bg-success' : 'bg-secondary') + '">' + (t.auto_run ? '已开启' : '已关闭') + '</span>' +
+                        '</div>' +
+                        '<div class="task-actions-wrap">' +
+                        '<button class="btn btn-sm btn-outline-primary" onclick="editTask(' + tidNum + ')" title="编辑"><i class="bi bi-pencil"></i> 编辑</button>' +
+                        '<button class="btn btn-sm ' + (t.auto_run ? 'btn-warning' : 'btn-success') + '" onclick="toggleTask(' + tidNum + ')" title="' + (t.auto_run ? '点击关闭' : '点击开启') + '">' + (t.auto_run ? '关闭' : '开启') + '</button>' +
+                        '<a class="btn btn-sm btn-outline-secondary" href="/nga_floors/' + tidNum + '" target="_blank" title="查看已抓取楼层"><i class="bi bi-list"></i> 楼层</a>' +
+                        '<button class="btn btn-sm btn-outline-danger" onclick="deleteTask(' + tidNum + ')" title="删除"><i class="bi bi-trash"></i></button>' +
+                        '</div></div></div></div>';
+                }).join('') +
+                '</div>';
+
+            document.getElementById('taskList').innerHTML = tableHtml + cardHtml;
         }
 
-        function escapeHtml(s) {
-            const div = document.createElement('div');
-            div.textContent = s;
-            return div.innerHTML;
+        function openModal(editTid) {
+            document.getElementById('taskModalLabel').textContent = editTid ? '编辑监控帖子' : '添加监控帖子';
+            document.getElementById('formTid').value = '';
+            document.getElementById('formTidInput').value = '';
+            document.getElementById('formTidInput').readOnly = false;
+            document.getElementById('wrapTid').style.display = '';
+            document.getElementById('formName').value = '';
+            document.getElementById('formWatchAuthors').value = '';
+            document.getElementById('formMessageGroup').value = '0';
+            document.getElementById('formAutoRun').checked = true;
+            fillGroupSelect(document.getElementById('formMessageGroup'));
+
+            if (editTid) {
+                document.getElementById('formTid').value = editTid;
+                document.getElementById('formTidInput').value = editTid;
+                document.getElementById('formTidInput').readOnly = true;
+                fetch('/api/nga_tasks/' + editTid)
+                    .then(function(res) { return res.json(); })
+                    .then(function(data) {
+                        if (data.success && data.task) {
+                            var t = data.task;
+                            document.getElementById('formName').value = t.name || '';
+                            document.getElementById('formWatchAuthors').value = (t.watch_author_ids || []).join(', ');
+                            document.getElementById('formMessageGroup').value = String(t.message_group_id != null ? t.message_group_id : '0');
+                            document.getElementById('formAutoRun').checked = t.auto_run !== false;
+                        }
+                    });
+            }
+            taskModal.show();
+        }
+
+        function editTask(tid) {
+            openModal(tid);
+        }
+
+        function saveTask() {
+            var isEdit = document.getElementById('formTid').value !== '';
+            var tidRaw = document.getElementById('formTidInput').value.trim();
+            if (!tidRaw) {
+                alert('请填写帖子 ID (tid)');
+                return;
+            }
+            var tid = parseInt(tidRaw, 10);
+            if (isNaN(tid) || tid < 1) {
+                alert('帖子 ID 必须为正整数');
+                return;
+            }
+            var name = document.getElementById('formName').value.trim();
+            var watchAuthorsStr = document.getElementById('formWatchAuthors').value.trim();
+            var watch_author_ids = watchAuthorsStr ? watchAuthorsStr.split(',').map(function(s) { return parseInt(s.trim(), 10); }).filter(function(n) { return !isNaN(n); }) : [];
+            var message_group_id = document.getElementById('formMessageGroup').value || '0';
+            var auto_run = document.getElementById('formAutoRun').checked;
+
+            var url = isEdit ? '/api/nga_tasks/' + tid : '/api/nga_tasks';
+            var method = isEdit ? 'PUT' : 'POST';
+            var body = { name: name, watch_author_ids: watch_author_ids, message_group_id: message_group_id, auto_run: auto_run };
+            if (!isEdit) body.tid = tid;
+
+            fetch(url, {
+                method: method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            })
+                .then(function(res) { return res.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        taskModal.hide();
+                        loadTasks();
+                    } else {
+                        alert(data.message || '保存失败');
+                    }
+                })
+                .catch(function(err) {
+                    alert('请求失败: ' + err.message);
+                });
+        }
+
+        function deleteTask(tid) {
+            if (!confirm('确定要删除该监控帖子 (tid=' + tid + ') 吗？')) return;
+            fetch('/api/nga_tasks/' + tid, { method: 'DELETE' })
+                .then(function(res) { return res.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        loadTasks();
+                    } else {
+                        alert(data.message || '删除失败');
+                    }
+                })
+                .catch(function(err) {
+                    alert('请求失败: ' + err.message);
+                });
         }
 
         function toggleTask(tid) {
-            fetch(`/api/nga_tasks/${tid}/toggle`, { method: 'POST' })
-                .then(res => res.json())
-                .then(data => {
+            fetch('/api/nga_tasks/' + tid + '/toggle', { method: 'POST' })
+                .then(function(res) { return res.json(); })
+                .then(function(data) {
                     if (data.success) {
                         loadTasks();
                     } else {
                         alert(data.message || '操作失败');
                     }
                 })
-                .catch(err => {
+                .catch(function(err) {
                     alert('请求失败: ' + err.message);
                 });
         }
 
-        document.addEventListener('DOMContentLoaded', loadTasks);
+        document.addEventListener('DOMContentLoaded', function() {
+            taskModalEl = document.getElementById('taskModal');
+            taskModal = new bootstrap.Modal(taskModalEl);
+            document.getElementById('btnSaveModal').addEventListener('click', saveTask);
+            loadMessageGroups().then(loadTasks);
+            window.addEventListener('resize', function() {
+                if (currentTasks.length > 0) renderTasks(currentTasks);
+            });
+        });
     </script>
 </body>
 </html>

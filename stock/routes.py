@@ -1,8 +1,8 @@
-from flask import (Blueprint, 
-                   render_template, 
-                   jsonify, 
-                   request, 
-                   session, 
+from flask import (Blueprint,
+                   render_template,
+                   jsonify,
+                   request,
+                   session,
                    Response,
                    stream_with_context)
 from stock_fetcher import StockFetcher
@@ -32,9 +32,22 @@ from stock_filter import StockFilger
 from Managers.ScanManager import ScanManager
 from stock_gatter.stockgetter_btc import StockGetter_BTC
 import csv
+import tempfile
+import sys
+import re
+from pathlib import Path
+
+# 保证 TestScripts 可被导入（nga_format）
+_route_dir = Path(__file__).resolve().parent
+_test_scripts = _route_dir / 'TestScripts'
+if str(_test_scripts) not in sys.path:
+    sys.path.insert(0, str(_test_scripts))
 
 try:
     from nga_spider import nga_db as nga_db
+    from nga_spider.nga_crawler import NGACrawler
+    from nga_spider import nga_parser as nga_parser
+    from nga_spider.nga_monitor import load_config as load_nga_config
 except Exception:
     nga_db = None
 
@@ -59,11 +72,50 @@ sendAllMessage = ""
 SVN_PATH = r'svn.exe'  # Windows示例
 config = Config()
 
+_STOCK_TABLE_RE = re.compile(r'^stock_(\d{6})_(SH|SZ)$')
+
+def _get_tracked_stocks():
+    """获取已跟踪的股票列表，优先 stock_list，否则回退到扫描已有的 stock_XXXXXX_XX 表"""
+    active = manager.get_active_stocks()
+    if active:
+        return active
+
+    db = Database.Create()
+    try:
+        if db.is_sqlite:
+            rows = db.fetch_all("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'stock_%'")
+        else:
+            rows = db.fetch_all("SHOW TABLES")
+
+        stocks = []
+        for row in rows:
+            name = row.get('name') if isinstance(row, dict) and 'name' in row else (list(row.values())[0] if isinstance(row, dict) else row[0])
+            m = _STOCK_TABLE_RE.match(str(name))
+            if m:
+                stocks.append({'code': m.group(1), 'market': m.group(2)})
+        if stocks:
+            logger.info(f"stock_list 为空，从已有表中发现 {len(stocks)} 只股票")
+        return stocks
+    except Exception as e:
+        logger.warning(f"扫描已有股票表失败: {e}")
+        return []
+    finally:
+        db.close()
 
 
 @bp.route('/')
 def index():
     return render_template('index.html')
+
+@bp.route('/quant')
+def quant():
+    """量化功能专用页面"""
+    return render_template('quant.html')
+
+@bp.route('/market_open_score')
+def market_open_score():
+    """今日大盘开盘评分"""
+    return render_template('market_open_score.html')
 
 @bp.route('/api/stocks', methods=['GET'])
 def get_stocks():
@@ -257,19 +309,362 @@ def toggle_item_status(item):
 def update_stock_list_api():
     sendAllMessage = ""
     success, sendAllMessage = manager.update_stock_list(False, None)
-    stockGlobal.wx.SendSignalMessages(sendAllMessage)
+    if platform.system() == 'Windows' and stockGlobal.wx:
+        stockGlobal.wx.SendSignalMessages(sendAllMessage)
     if success:
-        SendAllMessages()
+        if platform.system() == 'Windows' and stockGlobal.wx:
+            SendAllMessages()
         return jsonify({
             'success': True, 
             'message': '股票列表更新成功'
         })
     else:
-        SendAllMessages()
+        if platform.system() == 'Windows' and stockGlobal.wx:
+            SendAllMessages()
         return jsonify({
             'success': False,
             'message': '股票列表更新失败'
         }), 500
+
+@bp.route('/api/fetch_today_stocks', methods=['POST'])
+def fetch_today_stocks_api():
+    """使用 AKShare 批量拉取当天全市场实时行情，更新到已跟踪的各股票表中"""
+    try:
+        import akshare as ak
+
+        def _safe_float(val, default=0.0):
+            try:
+                if pd.isna(val) or val == '-':
+                    return default
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+
+        def _safe_int(val, default=0):
+            try:
+                if pd.isna(val) or val == '-':
+                    return default
+                return int(float(val))
+            except (ValueError, TypeError):
+                return default
+
+        logger.info("开始拉取当天股票实时行情...")
+        spot_df = None
+        for attempt in range(3):
+            try:
+                spot_df = ak.stock_zh_a_spot_em()
+                break
+            except Exception as fetch_err:
+                logger.warning(f"拉取实时行情第 {attempt+1} 次失败: {fetch_err}")
+                if attempt < 2:
+                    time.sleep(2)
+        if spot_df is None or spot_df.empty:
+            return jsonify({'success': False, 'message': '拉取实时行情失败，请稍后重试'}), 500
+        spot_df['代码'] = spot_df['代码'].astype(str)
+        spot_map = {}
+        for _, r in spot_df.iterrows():
+            spot_map[r['代码']] = r
+        logger.info(f"获取到 {len(spot_map)} 条实时行情")
+
+        active_stocks = _get_tracked_stocks()
+        if not active_stocks:
+            return jsonify({'success': False, 'message': '没有已跟踪的股票，请先点击「获取所有股票数据」'})
+
+        today = datetime.now().strftime('%Y-%m-%d')
+        updated = 0
+        skipped = 0
+        failed_list = []
+        total = len(active_stocks)
+
+        db = Database.Create()
+        cursor = None
+        try:
+            conn = db.get_connection()
+            if db.is_sqlite:
+                cursor = conn.cursor()
+            else:
+                cursor = conn.cursor(buffered=True)
+
+            for stock in active_stocks:
+                code = stock['code'] if isinstance(stock, dict) else stock[0]
+                if code not in spot_map:
+                    skipped += 1
+                    continue
+
+                row = spot_map[code]
+                table_name = manager._get_stock_table_name(code)
+                params = (
+                    today, code,
+                    _safe_float(row.get('今开')),
+                    _safe_float(row.get('最高')),
+                    _safe_float(row.get('最低')),
+                    _safe_float(row.get('最新价')),
+                    _safe_int(row.get('成交量')),
+                    _safe_float(row.get('成交额')),
+                    _safe_float(row.get('振幅')),
+                    _safe_float(row.get('涨跌幅')),
+                    _safe_float(row.get('涨跌额')),
+                    _safe_float(row.get('换手率')),
+                )
+
+                try:
+                    if db.is_sqlite:
+                        cursor.execute(f"""CREATE TABLE IF NOT EXISTS {table_name} (
+                            trade_date DATE PRIMARY KEY,
+                            code TEXT NOT NULL,
+                            open REAL, high REAL, low REAL, close REAL,
+                            volume INTEGER, amount REAL,
+                            amplitude REAL, pct_change REAL, p_change REAL, turnover_rate REAL,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )""")
+                        cursor.execute(f"""
+                            INSERT INTO {table_name}
+                                (trade_date, code, open, high, low, close, volume, amount,
+                                 amplitude, pct_change, p_change, turnover_rate)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                            ON CONFLICT(trade_date) DO UPDATE SET
+                                code=excluded.code, open=excluded.open, high=excluded.high,
+                                low=excluded.low, close=excluded.close, volume=excluded.volume,
+                                amount=excluded.amount, amplitude=excluded.amplitude,
+                                pct_change=excluded.pct_change, p_change=excluded.p_change,
+                                turnover_rate=excluded.turnover_rate
+                        """, params)
+                    else:
+                        cursor.execute(f"""CREATE TABLE IF NOT EXISTS {table_name} (
+                            trade_date DATE PRIMARY KEY,
+                            code VARCHAR(10) NOT NULL,
+                            open DECIMAL(10,2), high DECIMAL(10,2), low DECIMAL(10,2), close DECIMAL(10,2),
+                            volume BIGINT, amount DECIMAL(20,2),
+                            amplitude DECIMAL(10,2), pct_change DECIMAL(10,2),
+                            p_change DECIMAL(10,2), turnover_rate DECIMAL(10,2),
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+                        cursor.execute(f"""
+                            INSERT INTO {table_name}
+                                (trade_date, code, open, high, low, close, volume, amount,
+                                 amplitude, pct_change, p_change, turnover_rate)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            ON DUPLICATE KEY UPDATE
+                                code=VALUES(code), open=VALUES(open), high=VALUES(high),
+                                low=VALUES(low), close=VALUES(close), volume=VALUES(volume),
+                                amount=VALUES(amount), amplitude=VALUES(amplitude),
+                                pct_change=VALUES(pct_change), p_change=VALUES(p_change),
+                                turnover_rate=VALUES(turnover_rate)
+                        """, params)
+                    updated += 1
+                except Exception as e:
+                    failed_list.append(code)
+                    logger.error(f"更新 {code} 当日数据失败: {e}")
+
+            conn.commit()
+        finally:
+            if cursor:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+            db.close()
+
+        msg = f'成功更新 {updated}/{total} 只股票的当天数据'
+        if skipped:
+            msg += f'，{skipped} 只无行情数据'
+        if failed_list:
+            msg += f'，{len(failed_list)} 只失败'
+
+        logger.info(msg)
+        return jsonify({
+            'success': True,
+            'message': msg,
+            'updated_count': updated,
+            'total': total,
+            'skipped': skipped,
+            'failed_count': len(failed_list)
+        })
+    except Exception as e:
+        logger.error(f"拉取当天股票数据失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': f'拉取失败: {str(e)}'}), 500
+
+
+@bp.route('/api/fetch_today_tushare', methods=['POST'])
+def fetch_today_tushare_api():
+    """使用 Tushare 拉取当天日线行情，更新到已跟踪的各股票表中"""
+    try:
+        import tushare as ts
+
+        token = config.get('TUSHARE', 'TOKEN')
+        if not token or token == 'your-tushare-token-here':
+            return jsonify({'success': False, 'message': '未配置 Tushare Token，请在 config.ini [TUSHARE] 中设置 TOKEN'}), 400
+
+        pro = ts.pro_api(token)
+        today = datetime.now().strftime('%Y%m%d')
+
+        logger.info(f"使用 Tushare 拉取 {today} 日线行情...")
+
+        daily_df = None
+        for attempt in range(3):
+            try:
+                daily_df = pro.daily(trade_date=today)
+                break
+            except Exception as fetch_err:
+                logger.warning(f"Tushare 第 {attempt+1} 次请求失败: {fetch_err}")
+                if attempt < 2:
+                    time.sleep(2)
+
+        display_date = today
+        if daily_df is None or daily_df.empty:
+            from datetime import timedelta
+            for days_back in range(1, 5):
+                prev = (datetime.now() - timedelta(days=days_back)).strftime('%Y%m%d')
+                try:
+                    daily_df = pro.daily(trade_date=prev)
+                    if daily_df is not None and not daily_df.empty:
+                        display_date = prev
+                        break
+                except Exception:
+                    continue
+
+        if daily_df is None or daily_df.empty:
+            return jsonify({'success': False, 'message': f'{today} 暂无行情数据（可能未开盘或数据未更新）'})
+
+        spot_map = {}
+        for _, r in daily_df.iterrows():
+            code = str(r['ts_code']).split('.')[0]
+            spot_map[code] = r
+        logger.info(f"Tushare 获取到 {len(spot_map)} 条日线数据")
+
+        active_stocks = _get_tracked_stocks()
+        if not active_stocks:
+            return jsonify({'success': False, 'message': '没有已跟踪的股票，请先点击「获取所有股票数据」'})
+
+        trade_date_fmt = f"{display_date[:4]}-{display_date[4:6]}-{display_date[6:8]}"
+        updated = 0
+        skipped = 0
+        failed_list = []
+        total = len(active_stocks)
+
+        def _ts_float(val, default=0.0):
+            try:
+                if pd.isna(val):
+                    return default
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+
+        db = Database.Create()
+        cursor = None
+        try:
+            conn = db.get_connection()
+            if db.is_sqlite:
+                cursor = conn.cursor()
+            else:
+                cursor = conn.cursor(buffered=True)
+
+            for stock in active_stocks:
+                code = stock['code'] if isinstance(stock, dict) else stock[0]
+                if code not in spot_map:
+                    skipped += 1
+                    continue
+
+                row = spot_map[code]
+                table_name = manager._get_stock_table_name(code)
+
+                pre_close = _ts_float(row.get('pre_close'))
+                high = _ts_float(row.get('high'))
+                low = _ts_float(row.get('low'))
+                amplitude = round((high - low) / pre_close * 100, 2) if pre_close else 0.0
+
+                params = (
+                    trade_date_fmt, code,
+                    _ts_float(row.get('open')),
+                    high, low,
+                    _ts_float(row.get('close')),
+                    int(_ts_float(row.get('vol')) * 100),
+                    round(_ts_float(row.get('amount')) * 1000, 2),
+                    amplitude,
+                    _ts_float(row.get('pct_chg')),
+                    _ts_float(row.get('change')),
+                    0.0,
+                )
+
+                try:
+                    if db.is_sqlite:
+                        cursor.execute(f"""CREATE TABLE IF NOT EXISTS {table_name} (
+                            trade_date DATE PRIMARY KEY,
+                            code TEXT NOT NULL,
+                            open REAL, high REAL, low REAL, close REAL,
+                            volume INTEGER, amount REAL,
+                            amplitude REAL, pct_change REAL, p_change REAL, turnover_rate REAL,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )""")
+                        cursor.execute(f"""
+                            INSERT INTO {table_name}
+                                (trade_date, code, open, high, low, close, volume, amount,
+                                 amplitude, pct_change, p_change, turnover_rate)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                            ON CONFLICT(trade_date) DO UPDATE SET
+                                code=excluded.code, open=excluded.open, high=excluded.high,
+                                low=excluded.low, close=excluded.close, volume=excluded.volume,
+                                amount=excluded.amount, amplitude=excluded.amplitude,
+                                pct_change=excluded.pct_change, p_change=excluded.p_change,
+                                turnover_rate=excluded.turnover_rate
+                        """, params)
+                    else:
+                        cursor.execute(f"""CREATE TABLE IF NOT EXISTS {table_name} (
+                            trade_date DATE PRIMARY KEY,
+                            code VARCHAR(10) NOT NULL,
+                            open DECIMAL(10,2), high DECIMAL(10,2), low DECIMAL(10,2), close DECIMAL(10,2),
+                            volume BIGINT, amount DECIMAL(20,2),
+                            amplitude DECIMAL(10,2), pct_change DECIMAL(10,2),
+                            p_change DECIMAL(10,2), turnover_rate DECIMAL(10,2),
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+                        cursor.execute(f"""
+                            INSERT INTO {table_name}
+                                (trade_date, code, open, high, low, close, volume, amount,
+                                 amplitude, pct_change, p_change, turnover_rate)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            ON DUPLICATE KEY UPDATE
+                                code=VALUES(code), open=VALUES(open), high=VALUES(high),
+                                low=VALUES(low), close=VALUES(close), volume=VALUES(volume),
+                                amount=VALUES(amount), amplitude=VALUES(amplitude),
+                                pct_change=VALUES(pct_change), p_change=VALUES(p_change),
+                                turnover_rate=VALUES(turnover_rate)
+                        """, params)
+                    updated += 1
+                except Exception as e:
+                    failed_list.append(code)
+                    logger.error(f"Tushare 更新 {code} 失败: {e}")
+
+            conn.commit()
+        finally:
+            if cursor:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+            db.close()
+
+        msg = f'Tushare: 成功更新 {updated}/{total} 只股票的 {trade_date_fmt} 行情'
+        if skipped:
+            msg += f'，{skipped} 只无数据'
+        if failed_list:
+            msg += f'，{len(failed_list)} 只失败'
+
+        logger.info(msg)
+        return jsonify({
+            'success': True,
+            'message': msg,
+            'updated_count': updated,
+            'total': total,
+            'skipped': skipped,
+            'failed_count': len(failed_list)
+        })
+    except ImportError:
+        return jsonify({'success': False, 'message': 'tushare 未安装，请运行 pip install tushare'}), 500
+    except Exception as e:
+        logger.error(f"Tushare 拉取行情失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': f'Tushare 拉取失败: {str(e)}'}), 500
+
 
 @bp.route('/api/macd_settings', methods=['POST'])
 def update_macd_settings():
@@ -519,6 +914,23 @@ def nga_monitor_page():
     """NGA 监控任务状态与开关页面"""
     return render_template('nga_monitor.html')
 
+
+@bp.route('/nga_floors/<int:tid>')
+def nga_floors_page(tid: int):
+    """
+    某个帖子已抓取楼层列表页面（含已发送 / 未发送），从 NGA 监控页跳转。
+    """
+    if nga_db is None:
+        return render_template('nga_floors.html', tid=tid, thread=None, error="NGA 模块未加载")
+    try:
+        thread = nga_db.get_thread_config(tid)
+        if not thread:
+            return render_template('nga_floors.html', tid=tid, thread=None, error="帖子配置不存在，请先在 NGA 监控页面添加。")
+        return render_template('nga_floors.html', tid=tid, thread=thread, error=None)
+    except Exception as e:
+        logger.error(f"加载 NGA 楼层页面失败: {str(e)}", exc_info=True)
+        return render_template('nga_floors.html', tid=tid, thread=None, error=str(e))
+
 @bp.route('/api/nga_tasks', methods=['GET'])
 def get_nga_tasks():
     """获取所有 NGA 监控任务（含运行状态）"""
@@ -529,6 +941,101 @@ def get_nga_tasks():
         return jsonify({'success': True, 'tasks': tasks})
     except Exception as e:
         logger.error(f"获取 NGA 任务列表失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/nga_floors/<int:tid>', methods=['GET'])
+def get_nga_floors(tid: int):
+    """
+    获取某个帖子的已抓取楼层列表，包含在当前群组下是否已发送。
+    前端按行展示，并提供手动发送按钮。
+    """
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        thread = nga_db.get_thread_config(tid)
+        if not thread:
+            return jsonify({'success': False, 'message': '帖子配置不存在'}), 404
+        group_id = thread.get('message_group_id')
+        if group_id is None or group_id == 0 or group_id == '0':
+            return jsonify({'success': True, 'thread': thread, 'floors': [], 'message': '该帖子未配置消息群组，无法发送，仅展示已抓取楼层。'})
+
+        # 默认拉取最近 200 条楼层
+        floors = nga_db.get_floors_with_sent_for_group(tid, group_id, limit=200, offset=0)
+        return jsonify({'success': True, 'thread': thread, 'floors': floors})
+    except Exception as e:
+        logger.error(f"获取 NGA 楼层列表失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/nga_floors/<int:tid>/<int:pid>/send', methods=['POST'])
+def send_nga_floor(tid: int, pid: int):
+    """
+    手动发送某一楼内容到配置的群组。
+    不再检查 watch_author_ids 和是否已发送（允许手动重发），但仍会在 sent_log 中做去重。
+    """
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        thread = nga_db.get_thread_config(tid)
+        if not thread:
+            return jsonify({'success': False, 'message': '帖子配置不存在'}), 404
+
+        group_id = thread.get('message_group_id')
+        if group_id is None or group_id == 0 or group_id == '0':
+            return jsonify({'success': False, 'message': '该帖子未配置消息群组，无法发送'}), 400
+
+        floor = nga_db.get_floor_by_tid_pid(tid, pid)
+        if not floor:
+            return jsonify({'success': False, 'message': '楼层不存在'}), 404
+
+        # 读取 NGA 基本配置（auth / settings）
+        try:
+            cfg = load_nga_config()
+        except Exception as e:
+            logger.error(f"加载 NGA 配置失败: {e}", exc_info=True)
+            return jsonify({'success': False, 'message': '加载 NGA 配置失败'}), 500
+
+        auth_cfg = cfg.get('auth', {}) if isinstance(cfg, dict) else {}
+        settings = cfg.get('settings', {}) if isinstance(cfg, dict) else {}
+        user_agent = settings.get('user_agent') or None
+
+        # 构造爬虫实例，仅复用其 _send_wx 方法
+        thread_cfg = {
+            'name': thread.get('name') or str(tid),
+            'watch_author_ids': thread.get('watch_author_ids') or [],
+            'message_group_id': group_id,
+        }
+
+        wx_instance = None
+        try:
+            if getattr(stockGlobal, 'wx', None):
+                wx_instance = stockGlobal.wx
+        except Exception:
+            wx_instance = None
+
+        crawler = NGACrawler(tid=tid, thread_cfg=thread_cfg, auth_cfg=auth_cfg, wx=wx_instance, user_agent=user_agent)
+
+        # 生成与自动推送一致的消息内容
+        msg = nga_parser.build_wx_message(
+            tid=tid,
+            floor_num=floor['floor_num'],
+            pid=floor['pid'],
+            author_name=floor['author_name'],
+            post_date=floor.get('post_date', ''),
+            content_text=floor.get('content_text', ''),
+            quote_text=floor.get('quote_text'),
+            quote_name=None,
+            images=floor.get('images', []),
+            thread_name=thread_cfg['name'],
+        )
+
+        crawler._send_wx(msg, group_id)
+        nga_db.mark_sent(tid, pid, group_id)
+
+        return jsonify({'success': True, 'message': '发送成功'})
+    except Exception as e:
+        logger.error(f"手动发送 NGA 楼层失败: {str(e)}", exc_info=True)
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @bp.route('/api/nga_tasks/<int:tid>/toggle', methods=['POST'])
@@ -543,6 +1050,188 @@ def toggle_nga_task(tid):
         return jsonify({'success': True, 'auto_run': new_state})
     except Exception as e:
         logger.error(f"切换 NGA 任务状态失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/nga_tasks/<int:tid>', methods=['GET'])
+def get_nga_task(tid):
+    """获取单条 NGA 监控任务（用于编辑）"""
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        task = nga_db.get_thread_config(tid)
+        if task is None:
+            return jsonify({'success': False, 'message': '任务不存在'}), 404
+        return jsonify({'success': True, 'task': task})
+    except Exception as e:
+        logger.error(f"获取 NGA 任务失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/nga_tasks', methods=['POST'])
+def create_nga_task():
+    """新增 NGA 监控帖子"""
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        data = request.get_json() or {}
+        tid = data.get('tid')
+        if tid is None:
+            return jsonify({'success': False, 'message': '缺少帖子 ID (tid)'}), 400
+        try:
+            tid = int(tid)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': 'tid 必须为整数'}), 400
+        name = (data.get('name') or '').strip()
+        watch_author_ids = data.get('watch_author_ids')
+        if isinstance(watch_author_ids, list):
+            watch_author_ids = [int(x) for x in watch_author_ids if x is not None and str(x).strip() != '']
+        elif isinstance(watch_author_ids, str):
+            watch_author_ids = [int(x.strip()) for x in watch_author_ids.split(',') if x.strip().isdigit()]
+        else:
+            watch_author_ids = []
+        message_group_id = data.get('message_group_id')
+        if message_group_id is not None:
+            message_group_id = str(message_group_id).strip() or '0'
+        else:
+            message_group_id = '0'
+        auto_run = bool(data.get('auto_run', True))
+        nga_db.save_thread_config(tid=tid, name=name, watch_author_ids=watch_author_ids,
+                                   message_group_id=message_group_id, auto_run=auto_run)
+        return jsonify({'success': True, 'message': '添加成功'})
+    except ValueError as e:
+        return jsonify({'success': False, 'message': f'参数错误: {e}'}), 400
+    except Exception as e:
+        logger.error(f"添加 NGA 任务失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/nga_tasks/<int:tid>', methods=['PUT'])
+def update_nga_task(tid):
+    """编辑 NGA 监控帖子"""
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        existing = nga_db.get_thread_config(tid)
+        if existing is None:
+            return jsonify({'success': False, 'message': '任务不存在'}), 404
+        data = request.get_json() or {}
+        name = (data.get('name') or '').strip() if 'name' in data else existing['name']
+        watch_author_ids = data.get('watch_author_ids')
+        if watch_author_ids is not None:
+            if isinstance(watch_author_ids, list):
+                watch_author_ids = [int(x) for x in watch_author_ids if x is not None and str(x).strip() != '']
+            elif isinstance(watch_author_ids, str):
+                watch_author_ids = [int(x.strip()) for x in watch_author_ids.split(',') if x.strip().isdigit()]
+            else:
+                watch_author_ids = []
+        else:
+            watch_author_ids = existing['watch_author_ids']
+        message_group_id = data.get('message_group_id')
+        if message_group_id is not None:
+            message_group_id = str(message_group_id).strip() or '0'
+        else:
+            message_group_id = existing.get('message_group_id') or '0'
+        auto_run = data.get('auto_run') if 'auto_run' in data else existing['auto_run']
+        auto_run = bool(auto_run)
+        nga_db.save_thread_config(tid=tid, name=name, watch_author_ids=watch_author_ids,
+                                   message_group_id=message_group_id, auto_run=auto_run)
+        return jsonify({'success': True, 'message': '保存成功'})
+    except ValueError as e:
+        return jsonify({'success': False, 'message': f'参数错误: {e}'}), 400
+    except Exception as e:
+        logger.error(f"更新 NGA 任务失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/nga_tasks/<int:tid>', methods=['DELETE'])
+def delete_nga_task(tid):
+    """删除 NGA 监控帖子"""
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        ok = nga_db.delete_thread_config(tid)
+        if not ok:
+            return jsonify({'success': False, 'message': '任务不存在或删除失败'}), 404
+        return jsonify({'success': True, 'message': '已删除'})
+    except Exception as e:
+        logger.error(f"删除 NGA 任务失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/nga_message_groups', methods=['GET'])
+def get_nga_message_groups():
+    """获取消息群组列表（用于添加/编辑帖子时的下拉选择）"""
+    try:
+        from pathlib import Path
+        import yaml
+        config_path = Path('configs/send_message_group.yaml')
+        if not config_path.exists():
+            return jsonify({'success': True, 'groups': []})
+        with open(config_path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f) or {}
+        groups = data.get('groups', [])
+        out = [{'group_id': str(g.get('group_id', '')), 'chat_list': g.get('chat_list', [])} for g in groups]
+        return jsonify({'success': True, 'groups': out})
+    except Exception as e:
+        logger.error(f"获取消息群组列表失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/test_send_image', methods=['POST'])
+def test_send_image():
+    """
+    测试发送图片：从 config.ini [WX] TestImageUrl 下载图片，
+    通过剪贴板（SendFiles）发送到 TestImageSendTo 配置的微信聊天。
+    仅 Windows 且启用微信时有效。
+    """
+    #if platform.system() != 'Windows':
+    #    return jsonify({'success': False, 'message': '仅支持 Windows 系统'}), 400
+    try:
+        url = config.get('WX', 'TestImageUrl')
+        send_to = config.get('WX', 'TestImageSendTo') or '光影相生'
+        if not url or not url.strip():
+            return jsonify({'success': False, 'message': '未配置 TestImageUrl，请在 config.ini [WX] 中设置'}), 400
+        url = url.strip()
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        cookies = None
+        try:
+            cfg = load_nga_config()
+            auth_cfg = (cfg or {}).get('auth') or {}
+            uid = auth_cfg.get('ngaPassportUid') or ''
+            cid = auth_cfg.get('ngaPassportCid') or ''
+            if uid and cid:
+                headers['Referer'] = 'https://bbs.nga.cn/'
+                cookies = {'ngaPassportUid': str(uid), 'ngaPassportCid': str(cid)}
+            settings = (cfg or {}).get('settings') or {}
+            if settings.get('user_agent'):
+                headers['User-Agent'] = settings.get('user_agent')
+        except Exception:
+            pass
+        suffix = '.png'
+        if '.jpg' in url.lower() or 'jpeg' in url.lower():
+            suffix = '.jpg'
+        elif '.gif' in url.lower():
+            suffix = '.gif'
+        filename = 'test_image' + suffix
+        tmpdir = tempfile.mkdtemp()
+        try:
+            import nga_format
+            fullpath = nga_format.util_down(url, tmpdir, filename, '', headers=headers, cookies=cookies)
+            wx_instance = getattr(stockGlobal, 'wx', None)
+            if wx_instance is None:
+                return jsonify({'success': False, 'message': '微信未初始化，请确认已开启微信并启用 EnableWX'}), 400
+            wx_instance.SendFiles(fullpath, who=send_to)
+            return jsonify({'success': True, 'message': f'已发送到「{send_to}」'})
+        finally:
+            try:
+                import shutil
+                if os.path.exists(tmpdir):
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"测试发送图片失败: {e}", exc_info=True)
         return jsonify({'success': False, 'message': str(e)}), 500
 
 # 辅助函数

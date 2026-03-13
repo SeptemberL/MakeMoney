@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>量化 - 股票分析系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet">
+    <style>
+        .quant-hero {
+            background: linear-gradient(135deg, #1e3a5f 0%, #0d2137 100%);
+            color: #fff;
+            border-radius: 12px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+        .quant-hero h1 {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        .quant-hero .lead {
+            opacity: 0.9;
+        }
+        .quant-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .quant-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+        }
+        .quant-placeholder {
+            min-height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #6c757d;
+            border: 2px dashed #dee2e6;
+            border-radius: 8px;
+            background: #f8f9fa;
+        }
+    </style>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">股票分析系统</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/">首页</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/indicator_manager">指标管理</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/stock_filter">
+                            <i class="fas fa-filter"></i> 股票筛选器
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/nga_monitor">
+                            <i class="fas fa-rss"></i> NGA 监控
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/quant">
+                            <i class="fas fa-chart-line"></i> 量化
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/market_open_score">
+                            <i class="fas fa-sun"></i> 今日大盘开盘评分
+                        </a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-4">
+        <!-- 页面标题区 -->
+        <div class="quant-hero">
+            <h1><i class="fas fa-chart-line me-2"></i>量化</h1>
+            <p class="lead mb-0">策略回测、因子研究、组合分析等量化功能将在此展示。</p>
+        </div>
+
+        <!-- 功能区域（预留后续扩展） -->
+        <div class="row g-4">
+            <div class="col-md-6 col-lg-4">
+                <div class="card h-100 quant-card">
+                    <div class="card-header">
+                        <i class="fas fa-history me-2"></i>策略回测
+                    </div>
+                    <div class="card-body">
+                        <div class="quant-placeholder">
+                            <span><i class="fas fa-plus-circle me-2"></i>敬请期待</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6 col-lg-4">
+                <div class="card h-100 quant-card">
+                    <div class="card-header">
+                        <i class="fas fa-cubes me-2"></i>因子研究
+                    </div>
+                    <div class="card-body">
+                        <div class="quant-placeholder">
+                            <span><i class="fas fa-plus-circle me-2"></i>敬请期待</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6 col-lg-4">
+                <div class="card h-100 quant-card">
+                    <div class="card-header">
+                        <i class="fas fa-pie-chart me-2"></i>组合分析
+                    </div>
+                    <div class="card-body">
+                        <div class="quant-placeholder">
+                            <span><i class="fas fa-plus-circle me-2"></i>敬请期待</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
