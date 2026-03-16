@@ -148,7 +148,7 @@ def start_nga_monitor():
 
     wx = None
     try:
-        from stock_global import stockGlobal
+        from stocks.stock_global import stockGlobal
         wx = stockGlobal.wx
     except Exception:
         pass
@@ -179,7 +179,7 @@ if __name__ == '__main__':
             import sys
             sys.path.insert(0, str(_PROJECT_DIR))
             import wxauto
-            from stock_global import stockGlobal
+            from stocks.stock_global import stockGlobal
             if stockGlobal.wx:
                 wx = stockGlobal.wx
             else:

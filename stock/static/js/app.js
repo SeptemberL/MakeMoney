@@ -669,10 +669,10 @@ function loadStockData(stockCode) {
             trade_date: new Date(item.trade_date).toISOString().split('T')[0]
         }));
 
-        // 更新图表和信息
+        // 更新图表和信息（兼容旧接口：缺省为 [] / null / {}）
         updateCharts(processedData);
-        updateSignals(response.signals, response.amplitude);
-        updateProbabilities(response.probabilities);
+        updateSignals(response.signals || [], response.amplitude || null);
+        updateProbabilities(response.probabilities || {});
     }).fail(function(xhr, status, error) {
         console.error('Ajax请求失败:', {
             status: status,
@@ -700,8 +700,9 @@ function updateSignals(signals, amplitude) {
         `;
     }
     
-    // 添加原有的信号
-    signalHtml += signals.map(signal => `
+    // 添加原有的信号（signals 保证为数组）
+    const list = Array.isArray(signals) ? signals : [];
+    signalHtml += list.map(signal => `
         <div class="alert alert-${signal.signal === 'BUY' ? 'success' : 'danger'}">
             <strong>${signal.type}</strong>: ${signal.message}
             <span class="badge bg-secondary">${signal.strength}</span>
@@ -713,85 +714,14 @@ function updateSignals(signals, amplitude) {
 
 // 更新概率分析
 function updateProbabilities(probabilities) {
-    const probHtml = Object.entries(probabilities).map(([key, value]) => `
+    const obj = probabilities && typeof probabilities === 'object' ? probabilities : {};
+    const probHtml = Object.entries(obj).map(([key, value]) => `
         <div class="mb-2">
             <strong>${key}</strong>: ${(value * 100).toFixed(2)}%
         </div>
     `).join('');
     
     $('#probabilityList').html(probHtml);
-}
-
-// 执行SVN更新
-function executeSvnUpdate() {
-    // 显示更新中状态
-    const statusSpan = $('#svnUpdateStatus');
-    statusSpan.html('<span class="text-warning">正在更新...</span>');
-    
-    // 禁用按钮
-    const button = $(event.target);
-    button.prop('disabled', true);
-    
-    // 发送更新请求
-    $.ajax({
-        url: '/api/svn_update',
-        method: 'POST',
-        success: function(response) {
-            if (response.success) {
-                statusSpan.html(`<span class="text-success">更新成功！${response.message}</span>`);
-            } else {
-                statusSpan.html(`<span class="text-danger">更新失败：${response.error}</span>`);
-            }
-        },
-        error: function(xhr) {
-            statusSpan.html('<span class="text-danger">更新失败，请检查系统日志</span>');
-            console.error('SVN更新失败:', xhr.responseText);
-        },
-        complete: function() {
-            // 启用按钮
-            button.prop('disabled', false);
-            
-            // 3秒后清除成功状态消息
-            setTimeout(() => {
-                if (statusSpan.find('.text-success').length > 0) {
-                    statusSpan.html('');
-                }
-            }, 3000);
-        }
-    });
-}
-
-// 测试发送图片：下载配置的图片并通过剪贴板发送到微信
-function testSendImage() {
-    const statusSpan = $('#testSendImageStatus');
-    const button = $('#testSendImageBtn');
-    statusSpan.html('<span class="text-warning">正在下载并发送...</span>');
-    button.prop('disabled', true);
-    $.ajax({
-        url: '/api/test_send_image',
-        method: 'POST',
-        success: function(response) {
-            if (response.success) {
-                statusSpan.html('<span class="text-success">' + (response.message || '已发送') + '</span>');
-            } else {
-                statusSpan.html('<span class="text-danger">' + (response.message || '发送失败') + '</span>');
-            }
-        },
-        error: function(xhr) {
-            let msg = '请求失败';
-            if (xhr.responseJSON && xhr.responseJSON.message) msg = xhr.responseJSON.message;
-            else if (xhr.responseText) {
-                try { var j = JSON.parse(xhr.responseText); if (j.message) msg = j.message; } catch (e) {}
-            }
-            statusSpan.html('<span class="text-danger">' + msg + '</span>');
-        },
-        complete: function() {
-            button.prop('disabled', false);
-            setTimeout(function() {
-                if (statusSpan.find('.text-success').length > 0) statusSpan.html('');
-            }, 3000);
-        }
-    });
 }
 
 // 更新所有股票

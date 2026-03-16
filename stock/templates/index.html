@@ -62,11 +62,6 @@
             min-width: 800px;
             width: 100%;
         }
-        #svnUpdateStatus {
-            display: inline-block;
-            min-width: 150px;
-            margin-left: 10px;
-        }
         #updateStocksStatus {
             display: inline-block;
             min-width: 150px;
@@ -209,27 +204,15 @@
                     </div>
                     <div class="card-body">
                         <div class="mb-3">
-                            <button type="button" class="btn btn-warning" onclick="executeSvnUpdate()">
-                                <i class="fas fa-sync"></i> SVN更新
-                            </button>
-                            <span id="svnUpdateStatus" class="ms-2"></span>
-                        </div>
-                        <div class="mb-3">
                             <button type="button" class="btn btn-primary" onclick="updateAllStocks()">
                                 <i class="fas fa-database"></i> 更新所有股票数据
                             </button>
                             <span id="updateStocksStatus" class="ms-2"></span>
                         </div>
-                        <div>
-                            <a href="/list_manager" class="btn btn-info">
-                                <i class="fas fa-list"></i> 聊天群列表
-                            </a>
-                        </div>
                         <div class="mb-3">
-                            <button type="button" class="btn btn-outline-secondary" id="testSendImageBtn" onclick="testSendImage()">
-                                <i class="fas fa-image"></i> 测试发送图片
-                            </button>
-                            <span id="testSendImageStatus" class="ms-2"></span>
+                            <a href="/chat_groups" class="btn btn-info">
+                                <i class="fas fa-comments"></i> 聊天群管理
+                            </a>
                         </div>
                         <div class="mb-3">
                             <button type="button" class="btn btn-primary" id="updateStockListBtn" onclick="updateStockList()">

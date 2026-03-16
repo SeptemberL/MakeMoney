@@ -1,7 +1,5 @@
-from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Dict, Any, Callable, Optional, Union
-import yaml
 import sys
 import os
 
@@ -31,8 +29,6 @@ class WXGroupConfig:
 class WXGroupManager:
     _instance = None
 
-    config_file = 'configs/send_message_group.yaml'
-
     wxGroups = []
 
     def __new__(cls):
@@ -42,33 +38,25 @@ class WXGroupManager:
         return cls._instance
     
     def load_configs(self):
-        """从配置文件加载任务配置"""
+        """从数据库加载聊天群配置（list_type=weixin）。"""
         self.wxGroups = []
         try:
-            config_path = Path(self.config_file)
-            if not config_path.exists():
-                print(f"配置文件不存在: {self.config_file}")
-                return True
-            
-            with open(config_path, 'r', encoding='utf-8') as f:
-                configs_data = yaml.safe_load(f) or {}
-            
-            datas = configs_data.get('groups', [])
-            
-            loaded_count = 0
-            for data in datas:
-                config = WXGroupConfig.from_dict(data)
-                self.wxGroups.append(config)
-                loaded_count = loaded_count + 1
-                
-            print(f"从配置文件加载了 {loaded_count} 个聊天分组")
-                
+            from database.database import Database
+            db = Database.Create()
+            db.ensure_message_group_tables()
+            groups = db.get_all_message_groups(list_type='weixin')
+            db.close()
+            for g in groups:
+                self.wxGroups.append(WXGroupConfig(group_id=str(g['group_id']), chat_list=g.get('chat_list') or []))
+            print(f"从数据库加载了 {len(self.wxGroups)} 个微信聊天分组")
+            return True
         except Exception as e:
-            print(f"加载配置文件失败: {e}", exc_info=True)
+            print(f"加载聊天群配置失败: {e}", exc_info=True)
             return False
     
     def find_wx_group(self, groupid):
+        gid = int(groupid)
         for group in self.wxGroups:
-            if group.group_id == int(groupid):
+            if int(group.group_id) == gid:
                 return group.chat_list
         

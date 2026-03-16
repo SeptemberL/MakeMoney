@@ -11,29 +11,46 @@ logger = logging.getLogger(__name__)
 class StockListManager:
     def __init__(self):
         self.stock_list = None
+        self.needUpdate = True  # 是否需写入库，由 get_all_a_stocks 的 isSameDay 决定
 
     #检查stock_list表是否已经存在
     def _ensure_table_exists(self, db = None) -> bool:
         """
-        确保stock_list表存在
+        确保stock_list表存在（MySQL/SQLite 双模式）
         """
-        if db == None:
+        if db is None:
             db = Database.Create()
         try:
-            create_table_sql = """
-            CREATE TABLE IF NOT EXISTS stock_list (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                code VARCHAR(10) NOT NULL UNIQUE,
-                name VARCHAR(50) NOT NULL,
-                market VARCHAR(10) NOT NULL,
-                status TINYINT DEFAULT 1 COMMENT '1:正常交易 0:停牌',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                INDEX idx_code (code),
-                INDEX idx_status (status)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-            """
-            db.execute(create_table_sql)
+            if db.is_sqlite:
+                create_table_sql = """
+                CREATE TABLE IF NOT EXISTS stock_list (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    status INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+                db.execute(create_table_sql)
+                db.execute("CREATE INDEX IF NOT EXISTS idx_stock_list_code ON stock_list (code)")
+                db.execute("CREATE INDEX IF NOT EXISTS idx_stock_list_status ON stock_list (status)")
+            else:
+                create_table_sql = """
+                CREATE TABLE IF NOT EXISTS stock_list (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    code VARCHAR(10) NOT NULL UNIQUE,
+                    name VARCHAR(50) NOT NULL,
+                    market VARCHAR(10) NOT NULL,
+                    status TINYINT DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_code (code),
+                    INDEX idx_status (status)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+                db.execute(create_table_sql)
             logger.info("stock_list表创建成功或已存在")
             return True
         except Exception as e:
@@ -47,9 +64,10 @@ class StockListManager:
         返回: 股票列表和isSameDay标志(表示数据是否当天更新过)
         """
         # 检查数据是否当天更新过
-        db = Database.Create()
         isSameDay = False
+        db = None
         try:
+            db = Database.Create()
             result = db.fetch_one("SELECT updated_at FROM stock_list LIMIT 1")
             if result and 'updated_at' in result:
                 last_update = result['updated_at']
@@ -58,9 +76,16 @@ class StockListManager:
                 current_date = datetime.now()
                 isSameDay = last_update.date() == current_date.date()
         except Exception as e:
-            logger.warning(f"检查更新日期失败: {str(e)}")
+            logger.warning("检查更新日期失败: %s", str(e))
+        finally:
+            if db:
+                try:
+                    db.close()
+                except Exception:
+                    pass
         try:
-            # 获取所有A股列表
+            # 获取所有A股列表（易失败的外部调用）
+            logger.info("正在从 akshare 拉取全市场 A 股列表…")
             df = ak.stock_info_a_code_name()
             
             # 确保代码列为字符串类型
@@ -110,38 +135,36 @@ class StockListManager:
             }
             
         except Exception as e:
-            logger.error(f"获取股票列表失败: {str(e)}")
-            return []
+            logger.error(f"获取股票列表失败: {str(e)}", exc_info=True)
+            return {'stocks': [], 'isSameDay': False}
 
     def save_to_database(self) -> bool:
         """
         将股票列表保存到数据库
         """
+        db = None
         try:
             db = Database.Create()
             if not self.stock_list:
-                result = self.get_all_a_stocks(db)
-                if result and result.get('stocks'):
-                    self.stock_list = result['stocks']
-                    self.needUpdate = not result['isSameDay']
-                else:
+                result = self.get_all_a_stocks()
+                if not result or not result.get('stocks'):
+                    logger.warning("save_to_database: 无股票列表可保存")
                     return False
+                self.stock_list = result['stocks']
+                self.needUpdate = not result.get('isSameDay', True)
             
             # 确保表存在
             if not self._ensure_table_exists(db):
                 return False
-            
+
             if not self.needUpdate:
+                logger.info("股票列表今日已更新，跳过写入")
                 return True
 
-            # 开始事务
             success_count = 0
-            try:
-                # 先将所有股票状态设置为0
-                db.execute("UPDATE stock_list SET status = 0")
-                
-                for stock in self.stock_list:
-                    # 使用REPLACE INTO来处理更新和插入
+            db.execute("UPDATE stock_list SET status = 0")
+            for stock in self.stock_list:
+                try:
                     db.execute(
                         """
                         REPLACE INTO stock_list 
@@ -151,22 +174,25 @@ class StockListManager:
                         (stock['code'], stock['name'], stock['market'])
                     )
                     success_count += 1
-                
-                logger.info(f"成功保存 {success_count} 只股票到数据库")
-                return True
-                
-            except Exception as e:
-                logger.error(f"保存股票列表失败: {str(e)}")
-                return False
-            
+                except Exception as e:
+                    logger.warning("写入股票 %s 失败: %s", stock.get('code'), str(e))
+            logger.info("成功保存 %s 只股票到数据库", success_count)
+            return True
         except Exception as e:
-            logger.error(f"保存股票列表失败: {str(e)}")
+            logger.error(f"保存股票列表失败: {str(e)}", exc_info=True)
             return False
+        finally:
+            if db:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     def get_active_stocks(self) -> List[Dict[str, str]]:
         """
         获取数据库中的活跃股票列表
         """
+        db = None
         try:
             db = Database.Create()
             query = """
@@ -175,82 +201,88 @@ class StockListManager:
             WHERE status = 1 
             ORDER BY code
             """
-            results = db.fetch_all(query)
-            return results
+            return db.fetch_all(query)
         except Exception as e:
-            logger.error(f"获取活跃股票列表失败: {str(e)}")
+            logger.error("获取活跃股票列表失败: %s", str(e), exc_info=True)
             return []
         finally:
-            db.close()
+            if db:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     def get_stock_list(self):
         """
-        更新股票列表
-        1. 获取最新的股票列表
-        2. 保存到数据库
+        获取最新股票列表（不写库），更新内存中的 self.stock_list。
+        返回 list 或 False。
         """
         try:
-            # 获取最新股票列表
-            db = Database.Create()
             result = self.get_all_a_stocks()
             if not result or not result.get('stocks'):
                 return False
-                
-            new_stocks = result['stocks']
-            self.needUpdate = not result['isSameDay']
-            self.stock_list = new_stocks
-            print("update_stock_list:", self.stock_list)
+            self.needUpdate = not result.get('isSameDay', True)
+            self.stock_list = result['stocks']
+            logger.info("get_stock_list: 共 %s 只股票", len(self.stock_list))
             return self.stock_list
         except Exception as e:
-            logger.error(f"更新股票列表失败: {str(e)}")
-            return False
-        finally:
-            db.close()  
+            logger.error(f"更新股票列表失败: {str(e)}", exc_info=True)
+            return False  
 
-    def update_stock_list(self, isCheckSingle:bool, checkFunc) -> bool:
+    def update_stock_list(
+        self,
+        isCheckSingle: bool,
+        checkFunc,
+        progressFunc=None,
+        limit: int = None,
+    ):
         """
-        更新股票列表
-        1. 获取最新的股票列表
-        2. 保存到数据库
+        更新股票列表并可选更新历史数据。
+        1. 获取最新股票列表并 save_to_database 写入库
+        2. 若 limit 有值则只处理前 limit 只（便于小规模验收），否则处理全部
+        返回: (success: bool, outMessage: str)
         """
+        db = None
+        outMessage = ""
         try:
-            # 获取最新股票列表
-            db = Database.Create()
             result = self.get_all_a_stocks()
             if not result or not result.get('stocks'):
-                return False
-                
-            new_stocks = result['stocks']
-            self.needUpdate = not result['isSameDay']
-            self.stock_list = new_stocks
-            print("update_stock_list:", self.stock_list)
-            
-            # 保存到数据库
-            #saveSocksSuccess = self.save_to_database(db)
-            #更新所有股票数据到本地数据库
-            saveSocksSuccess = True
+                logger.warning("update_stock_list: 未获取到股票列表")
+                return False, ""
+
+            self.stock_list = result['stocks']
+            self.needUpdate = not result.get('isSameDay', True)
+            logger.info("update_stock_list: 共 %s 只股票，limit=%s", len(self.stock_list), limit)
+
+            saveSocksSuccess = self.save_to_database()
+            if not saveSocksSuccess:
+                return False, ""
+
+            to_process = self.stock_list[:limit] if limit is not None else self.stock_list
+            maxNum = len(to_process)
             outMessage = ""
-            if saveSocksSuccess:
-                index = 1
-                maxNum =  len(self.stock_list)
-                for stock in self.stock_list:
-                    logger.info(f"{index}/{maxNum}更新股票：{stock['code']} -- {stock['name']}")
+            for index, stock in enumerate(to_process, start=1):
+                try:
+                    logger.info("%s/%s 更新股票：%s -- %s", index, maxNum, stock['code'], stock['name'])
+                    if progressFunc:
+                        progressFunc(index, maxNum, stock)
                     self.update_stock_history(stock['code'])
-                    index = index + 1
-                    signalMsg = ""
-                    if isCheckSingle:
-                        signalMsg = checkFunc(stock['code'], self)# check_signal.CheckSingle(stock['code'], self)
-                    if signalMsg != None and signalMsg != "":
-                        outMessage = outMessage + signalMsg + "\n"
-                    #if index == 10:
-                    #    break
-            return saveSocksSuccess, outMessage
-            
+                    if isCheckSingle and checkFunc:
+                        signalMsg = checkFunc(stock['code'], self)
+                        if signalMsg:
+                            outMessage = outMessage + signalMsg + "\n"
+                except Exception as e:
+                    logger.warning("更新股票 %s 失败: %s", stock.get('code'), str(e))
+            return True, outMessage
         except Exception as e:
-            logger.error(f"更新股票列表失败: {str(e)}")
-            return False
+            logger.error("更新股票列表失败: %s", str(e), exc_info=True)
+            return False, str(e)
         finally:
-            db.close()  
+            if db:
+                try:
+                    db.close()
+                except Exception:
+                    pass  
 
     def _get_stock_table_name(self, code: str) -> str:
             """获取股票对应的数据表名"""
@@ -259,36 +291,45 @@ class StockListManager:
             return f"stock_{code}_{market}"
 
     def _create_stock_table(self, table_name: str) -> bool:
-        """确保股票数据表存在"""
+        """确保股票数据表存在（MySQL/SQLite 双模式）"""
+        db = None
         try:
             db = Database.Create()
-            create_table_sql = f"""
-            CREATE TABLE {table_name} (
-                        trade_date DATE PRIMARY KEY,
-                        code VARCHAR(10) NOT NULL,
-                        open DECIMAL(10,2),
-                        high DECIMAL(10,2),
-                        low DECIMAL(10,2),
-                        close DECIMAL(10,2),
-                        volume BIGINT,
-                        amount DECIMAL(20,2),
-                        amplitude DECIMAL(10,2),
-                        pct_change DECIMAL(10,2),
-                        p_change DECIMAL(10,2),
-                        turnover_rate DECIMAL(10,2),
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                        INDEX idx_trade_date (trade_date)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            
-            """
-            db.execute(create_table_sql)
+            if db.is_sqlite:
+                create_table_sql = f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    trade_date DATE PRIMARY KEY,
+                    code TEXT NOT NULL,
+                    open REAL, high REAL, low REAL, close REAL,
+                    volume INTEGER, amount REAL,
+                    amplitude REAL, pct_change REAL, p_change REAL, turnover_rate REAL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+                db.execute(create_table_sql)
+                db.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_trade_date ON {table_name} (trade_date)")
+            else:
+                create_table_sql = f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    trade_date DATE PRIMARY KEY,
+                    code VARCHAR(10) NOT NULL,
+                    open DECIMAL(10,2), high DECIMAL(10,2), low DECIMAL(10,2), close DECIMAL(10,2),
+                    volume BIGINT, amount DECIMAL(20,2),
+                    amplitude DECIMAL(10,2), pct_change DECIMAL(10,2), p_change DECIMAL(10,2),
+                    turnover_rate DECIMAL(10,2),
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_trade_date (trade_date)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+                db.execute(create_table_sql)
             logger.info(f"股票数据表 {table_name} 创建或已存在")
             return True
         except Exception as e:
             logger.error(f"创建股票数据表 {table_name} 失败: {str(e)}")
             return False
         finally:
-            db.close()
+            if db:
+                db.close()
 
 
     #更新单只股票的历史数据
@@ -303,18 +344,13 @@ class StockListManager:
         try:
             db = Database.Create()
             table_name = self._get_stock_table_name(stock_id)
-            # 检查表是否存在
-            sqlquery = f"""
-                SELECT COUNT(*)
-                FROM information_schema.tables
-                WHERE table_schema = DATABASE() AND table_name = '{table_name}'"""
-            cursor = db.execute(sqlquery)
-            result = cursor.fetchone()
-            logger.info(f"table {table_name} is Exists  {result["COUNT(*)"]}")
+            # 检查表是否存在（兼容 MySQL/SQLite）
+            table_exists = db.table_exists(table_name)
+            logger.info("表 %s 存在检查: %s", table_name, table_exists)
             # 获取当前日期
             current_date = datetime.now().strftime('%Y%m%d')
             update_at = None
-            if result["COUNT(*)"] == 0:
+            if not table_exists:
                 #没有对应股票的表格，则创建股票独立表格
                 self._create_stock_table(table_name)
                 logger.info(f"创建表 {table_name}")
@@ -323,13 +359,14 @@ class StockListManager:
                 last_Updated_date = None
             else:
                 # 获取最新的交易日期
+                last_Updated_date = None
                 cursor = db.execute(f"SELECT trade_date,updated_at  FROM {table_name} WHERE trade_date = (SELECT MAX(trade_date) FROM {table_name})")
                 last_date = None
                 fetch_result = cursor.fetchone()
-                if fetch_result != None and fetch_result["trade_date"] is not None:
+                if fetch_result and fetch_result.get("trade_date") is not None:
                     last_date = fetch_result["trade_date"]
-                    last_Updated_date = fetch_result["updated_at"]
-                need_full_history = last_date  is None
+                    last_Updated_date = fetch_result.get("updated_at")
+                need_full_history = last_date is None
 
             # 确定股票市场
             market = 'A股'
@@ -370,13 +407,13 @@ class StockListManager:
                             end_date = current_date
 
                         # 判断 last_date 是否在当天 15 点之前
-                        if int(last_date.strftime('%Y%m%d')) < int(current_date):
+                        if last_date is not None and int(last_date.strftime('%Y%m%d')) < int(current_date):
                             start_date = (last_date + timedelta(days=1)).strftime('%Y%m%d')
                             logger.info(f"获取{stock_id}股票数据{start_date}到{end_date}")
                             df = ak.stock_zh_a_hist(symbol=stock_id, period="daily", 
                                                 adjust="qfq", start_date=start_date, end_date=end_date)
                             needUpdate = True
-                        elif last_Updated_date < threshold_time:
+                        elif last_Updated_date is not None and last_Updated_date < threshold_time:
                             start_date = (last_Updated_date).strftime('%Y%m%d')
                             logger.info(f"获取{stock_id}股票数据{start_date}到{end_date}")
                             df = ak.stock_zh_a_hist(symbol=stock_id, period="daily", 
@@ -523,4 +560,12 @@ class StockListManager:
             return None
         finally:
             db.close()
+
+
+if __name__ == "__main__":
+    # 阶段 1.3 小规模验收：仅更新前 2 只股票，验证列表保存 + 历史更新流程
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s [%(name)s] %(message)s")
+    manager = StockListManager()
+    success, msg = manager.update_stock_list(False, None, limit=2)
+    print("成功" if success else "失败", msg or "")
 

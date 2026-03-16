@@ -12,23 +12,39 @@ class StockFetcher:
         self._ensure_table_exists()
 
     def _ensure_table_exists(self):
-        """确保股票表存在"""
-        db = Database.Create() 
+        """确保股票表存在（MySQL/SQLite 双模式）"""
+        db = Database.Create()
         try:
-            create_table_sql = """
-            CREATE TABLE IF NOT EXISTS stocks (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                code VARCHAR(10) NOT NULL UNIQUE,
-                name VARCHAR(50) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                alert_enabled BOOLEAN DEFAULT FALSE,
-                alert_upper_threshold DECIMAL(10,2) DEFAULT NULL,
-                alert_lower_threshold DECIMAL(10,2) DEFAULT NULL,
-                INDEX idx_code (code)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-            """
-            db.execute(create_table_sql)
+            if db.is_sqlite:
+                create_table_sql = """
+                CREATE TABLE IF NOT EXISTS stocks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    alert_enabled INTEGER DEFAULT 0,
+                    alert_upper_threshold REAL DEFAULT NULL,
+                    alert_lower_threshold REAL DEFAULT NULL
+                )
+                """
+                db.execute(create_table_sql)
+                db.execute("CREATE INDEX IF NOT EXISTS idx_stocks_code ON stocks (code)")
+            else:
+                create_table_sql = """
+                CREATE TABLE IF NOT EXISTS stocks (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    code VARCHAR(10) NOT NULL UNIQUE,
+                    name VARCHAR(50) NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    alert_enabled BOOLEAN DEFAULT FALSE,
+                    alert_upper_threshold DECIMAL(10,2) DEFAULT NULL,
+                    alert_lower_threshold DECIMAL(10,2) DEFAULT NULL,
+                    INDEX idx_code (code)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+                db.execute(create_table_sql)
             logger.info("股票表创建或已存在")
         except Exception as e:
             logger.error(f"创建股票表时出错: {str(e)}")

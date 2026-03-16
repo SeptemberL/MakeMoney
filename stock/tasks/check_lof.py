@@ -1,11 +1,14 @@
 import yaml
 import sys
 import os
+import logging
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Dict, Any, Callable, Optional, Union
 
-from stock_global import StockGlobal
+logger = logging.getLogger(__name__)
+
+from stocks.stock_global import stockGlobal
 
 # 获取当前脚本（A.py）所在目录的父目录（即项目根目录）
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -74,7 +77,6 @@ def check_lof():
         messages = messages + message
         
 
-    stockGlobal = StockGlobal()
     if stockGlobal.wx != None:
         for wx in wxList:
             stockGlobal.wx.SendMsg(messages, wx) 
@@ -84,14 +86,14 @@ def check_lof():
         #sliver_data = crawl_lof.fetch_fund_data(url)
 
 
-def load_configs() -> bool:
-    """从配置文件加载任务配置"""
+def load_configs():
+    """从配置文件加载任务配置，返回 list[LofConfig]，失败或不存在时返回 []"""
     result = []
     try:
         config_path = Path(config_file)
         if not config_path.exists():
-            print(f"配置文件不存在: {config_file}")
-            return True
+            logger.warning("配置文件不存在: %s", config_file)
+            return []
             
         with open(config_path, 'r', encoding='utf-8') as f:
             configs_data = yaml.safe_load(f) or {}
@@ -108,5 +110,5 @@ def load_configs() -> bool:
         return result
                 
     except Exception as e:
-        print(f"加载配置文件失败: {e}", exc_info=True)
-        return False
+        logger.exception("加载配置文件失败: %s", e)
+        return []

@@ -8,8 +8,8 @@ if str(_MAIN_DIR) not in sys.path:
     sys.path.insert(0, str(_MAIN_DIR))
 
 from flask import Flask
-from stock_fetcher import StockFetcher
-from stock_analyzer import StockAnalyzer
+from stocks.stock_fetcher import StockFetcher
+from stocks.stock_analyzer import StockAnalyzer
 import platform
 from init_project import init_project, setup_logging
 import akshare as ak
@@ -37,7 +37,7 @@ except Exception as e:
 import threading
 import schedule
 import time
-from stock_global import stockGlobal
+from stocks.stock_global import stockGlobal
 from flask_socketio import SocketIO, emit
 
 from Managers.scheduler_system import TaskManager

@@ -86,6 +86,20 @@ class Database:
         query = query.replace('INSERT IGNORE', 'INSERT OR IGNORE')
         return query
 
+    def table_exists(self, table_name: str) -> bool:
+        """判断表是否存在。MySQL 用 information_schema，SQLite 用 sqlite_master。"""
+        if self.is_sqlite:
+            r = self.fetch_one(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table_name,)
+            )
+            return r is not None
+        r = self.fetch_one(
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s",
+            (table_name,)
+        )
+        return r is not None
+
     # ─────────────────────────── 连接管理 ────────────────────────────────────
 
     def connect(self):
@@ -287,6 +301,26 @@ class Database:
             last_login TIMESTAMP,
             settings TEXT
         )''')
+        self._create_message_group_tables_sqlite()
+
+    def _create_message_group_tables_sqlite(self):
+        """聊天群列表表（SQLite）"""
+        self.execute('''CREATE TABLE IF NOT EXISTS message_group (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER NOT NULL,
+            list_type VARCHAR(32) NOT NULL DEFAULT 'weixin',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(list_type, group_id)
+        )''')
+        self.execute('''CREATE TABLE IF NOT EXISTS message_group_chat (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER NOT NULL,
+            chat_name VARCHAR(256) NOT NULL,
+            sort_order INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (group_id) REFERENCES message_group(id) ON DELETE CASCADE
+        )''')
 
     def _init_database_mysql(self):
         self.execute('''CREATE TABLE IF NOT EXISTS stock_config (
@@ -333,23 +367,164 @@ class Database:
             last_login TIMESTAMP NULL,
             settings TEXT
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+        self._create_message_group_tables_mysql()
+
+    def _create_message_group_tables_mysql(self):
+        """聊天群列表表（MySQL）"""
+        self.execute('''CREATE TABLE IF NOT EXISTS message_group (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            group_id INT NOT NULL,
+            list_type VARCHAR(32) NOT NULL DEFAULT 'weixin',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_type_group (list_type, group_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+        self.execute('''CREATE TABLE IF NOT EXISTS message_group_chat (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            group_id INT NOT NULL,
+            chat_name VARCHAR(256) NOT NULL,
+            sort_order INT DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            KEY idx_group_id (group_id),
+            FOREIGN KEY (group_id) REFERENCES message_group(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+
+    # ─────────────────────────── 聊天群列表 ────────────────────────────────────
+
+    def ensure_message_group_tables(self):
+        """确保 message_group 相关表存在（不依赖 init_database）"""
+        if self.is_sqlite:
+            self._create_message_group_tables_sqlite()
+        else:
+            self._create_message_group_tables_mysql()
+
+    def get_all_message_groups(self, list_type=None):
+        """获取所有群组；list_type 为 None 时返回所有类型。返回 [{id, group_id, list_type, chat_list: [str]}, ...]"""
+        self.ensure_message_group_tables()
+        if list_type is not None:
+            rows = self.fetch_all(
+                'SELECT id, group_id, list_type FROM message_group WHERE list_type = %s ORDER BY list_type, group_id',
+                (list_type,)
+            )
+        else:
+            rows = self.fetch_all(
+                'SELECT id, group_id, list_type FROM message_group ORDER BY list_type, group_id'
+            )
+        out = []
+        for r in rows:
+            chats = self.fetch_all(
+                'SELECT chat_name FROM message_group_chat WHERE group_id = %s ORDER BY sort_order, id',
+                (r['id'],)
+            )
+            out.append({
+                'id': r['id'],
+                'group_id': r['group_id'],
+                'list_type': r['list_type'] or 'weixin',
+                'chat_list': [c['chat_name'] for c in chats],
+            })
+        return out
+
+    def get_message_group_by_id(self, pk_id):
+        """根据主键 id 获取一个群组（含 chat_list）"""
+        self.ensure_message_group_tables()
+        r = self.fetch_one('SELECT id, group_id, list_type FROM message_group WHERE id = %s', (pk_id,))
+        if not r:
+            return None
+        chats = self.fetch_all(
+            'SELECT chat_name FROM message_group_chat WHERE group_id = %s ORDER BY sort_order, id',
+            (r['id'],)
+        )
+        return {
+            'id': r['id'],
+            'group_id': r['group_id'],
+            'list_type': r['list_type'] or 'weixin',
+            'chat_list': [c['chat_name'] for c in chats],
+        }
+
+    def create_message_group(self, group_id, list_type='weixin', chat_list=None):
+        """创建群组并写入 chat_list。返回 (True, id) 或 (False, error_msg)。"""
+        self.ensure_message_group_tables()
+        chat_list = chat_list or []
+        try:
+            self.execute(
+                'INSERT INTO message_group (group_id, list_type) VALUES (%s, %s)',
+                (group_id, (list_type or 'weixin'))
+            )
+            if self.is_sqlite:
+                row = self.fetch_one('SELECT last_insert_rowid() AS id')
+                pk = row['id']
+            else:
+                row = self.fetch_one('SELECT LAST_INSERT_ID() AS id')
+                pk = row['id']
+            for i, name in enumerate(chat_list):
+                self.execute(
+                    'INSERT INTO message_group_chat (group_id, chat_name, sort_order) VALUES (%s, %s, %s)',
+                    (pk, (name or '').strip(), i)
+                )
+            return (True, pk)
+        except Exception as e:
+            logger.error(f"创建 message_group 失败: {str(e)}")
+            if 'UNIQUE' in str(e) or 'Duplicate' in str(e):
+                return (False, '该类型下 group_id 已存在')
+            return (False, str(e))
+
+    def update_message_group(self, pk_id, group_id=None, list_type=None, chat_list=None):
+        """更新群组。chat_list 若提供则整体替换。返回 (True, None) 或 (False, error_msg)。"""
+        self.ensure_message_group_tables()
+        try:
+            if group_id is not None:
+                self.execute(
+                    'UPDATE message_group SET group_id = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s',
+                    (group_id, pk_id)
+                )
+            if list_type is not None:
+                self.execute(
+                    'UPDATE message_group SET list_type = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s',
+                    (list_type, pk_id)
+                )
+            if chat_list is not None:
+                self.execute('DELETE FROM message_group_chat WHERE group_id = %s', (pk_id,))
+                for i, name in enumerate(chat_list):
+                    self.execute(
+                        'INSERT INTO message_group_chat (group_id, chat_name, sort_order) VALUES (%s, %s, %s)',
+                        (pk_id, (name or '').strip(), i)
+                    )
+            return (True, None)
+        except Exception as e:
+            logger.error(f"更新 message_group 失败: {str(e)}")
+            return (False, str(e))
+
+    def delete_message_group(self, pk_id):
+        """删除群组（级联删除 chat）。返回 True/False。"""
+        self.ensure_message_group_tables()
+        try:
+            self.execute('DELETE FROM message_group WHERE id = %s', (pk_id,))
+            return True
+        except Exception as e:
+            logger.error(f"删除 message_group 失败: {str(e)}")
+            return False
 
     # ─────────────────────────── 用户管理 ────────────────────────────────────
 
-    def create_user(self, username: str, password: str, email: str = None) -> bool:
-        """创建新用户"""
+    def create_user(self, username: str, password: str, email: str = None):
+        """创建新用户。成功返回 (True, None)，用户名/邮箱已存在返回 (False, 'duplicate')，其他失败返回 (False, 'error')。"""
         try:
             hashed_password = generate_password_hash(password)
             if isinstance(hashed_password, bytes):
                 hashed_password = hashed_password.decode('utf-8')
             self.execute(
                 'INSERT INTO users (username, password, email) VALUES (%s, %s, %s)',
-                (username, hashed_password, email)
+                (username, hashed_password, email or None)
             )
-            return True
+            return (True, None)
         except Exception as e:
+            # 唯一约束冲突（用户名或邮箱已存在）
+            err_name = type(e).__name__
+            if err_name == 'IntegrityError' or 'Duplicate' in str(e) or 'UNIQUE' in str(e).upper():
+                logger.info(f"注册拒绝：用户名或邮箱已存在 - {username}")
+                return (False, 'duplicate')
             logger.error(f"创建用户失败: {str(e)}")
-            return False
+            return (False, 'error')
         finally:
             self.close()
 

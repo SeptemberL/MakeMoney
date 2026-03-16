@@ -455,7 +455,7 @@ class NGACrawler:
             # 允许 wx 实例延迟就绪：发送前再尝试从全局拿一次 / 在 Windows 下尝试创建
             if self.wx is None:
                 try:
-                    from stock_global import stockGlobal
+                    from stocks.stock_global import stockGlobal
                     if getattr(stockGlobal, 'wx', None):
                         self.wx = stockGlobal.wx
                 except Exception:
@@ -464,7 +464,7 @@ class NGACrawler:
             if self.wx is None and platform.system() == 'Windows':
                 try:
                     import wxauto
-                    from stock_global import stockGlobal
+                    from stocks.stock_global import stockGlobal
                     self.wx = wxauto.WeChat()
                     stockGlobal.wx = self.wx
                     logger.info('微信实例已延迟创建')

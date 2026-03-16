@@ -7,7 +7,7 @@ from signals.signal_boll3 import Signal_BOLL3
 from database.database import Database
 import pandas as pd
 from datetime import datetime
-from stock_analyzer import StockAnalyzer
+from stocks.stock_analyzer import StockAnalyzer
 
 
 

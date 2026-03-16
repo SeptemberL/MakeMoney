@@ -5,8 +5,8 @@ from flask import (Blueprint,
                    session,
                    Response,
                    stream_with_context)
-from stock_fetcher import StockFetcher
-from stock_analyzer import StockAnalyzer
+from stocks.stock_fetcher import StockFetcher
+from stocks.stock_analyzer import StockAnalyzer
 from database.database import Database
 from indicator_manager import IndicatorManager
 import logging
@@ -27,8 +27,8 @@ from config import Config
 import check_signal
 from stock_list_manager import StockListManager
 from signals.signal_boll3 import Signal_BOLL3
-from stock_global import stockGlobal
-from stock_filter import StockFilger
+from stocks.stock_global import stockGlobal
+from stocks.stock_filter import StockFilger
 from Managers.ScanManager import ScanManager
 from stock_gatter.stockgetter_btc import StockGetter_BTC
 import csv
@@ -69,7 +69,6 @@ logger = logging.getLogger(__name__)
 
 # 全局变量
 sendAllMessage = ""
-SVN_PATH = r'svn.exe'  # Windows示例
 config = Config()
 
 _STOCK_TABLE_RE = re.compile(r'^stock_(\d{6})_(SH|SZ)$')
@@ -164,53 +163,72 @@ def delete_stock(code):
 @bp.route('/api/stock_data/<stock_code>')
 def get_stock_data(stock_code):
     try:
-        #stockGetterBtc = StockGetter_BTC()
-        #stockGetterBtc.get_data()
-        #return jsonify({'error': '没有找到数据'}), 404
-        scanManager = ScanManager()
+        # 优先尝试增量更新该股票的历史数据
+        try:
+            manager.update_stock_history(stock_code)
+        except Exception as e:
+            logger.warning(f"更新股票 {stock_code} 历史数据失败，将尝试直接读取: {e}")
 
-        stock_btc = StockGetter_BTC()
-        ethResult = stock_btc.get_data()
-        filterSignals = ["DLJG"]
-        filter = StockFilger()
-        signal,avg_return ,positive_prob  = filter.filter_stock(ethResult, 10, filterSignals)
-        return
-        if manager.update_stock_history(stock_code):
-            df = manager.get_stock_data(stock_code, 365)
-            #signalClass = Signal_DLJG2()
-            #signalClass.calculate(df) 
-            if df is not None and not df.empty:
-                df['trade_date'] = pd.to_datetime(df['trade_date'])
-                numeric_columns = ['open', 'close', 'high', 'low', 'volume', 'amount', 'p_change', 'turnover_rate']
-                for col in numeric_columns:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
+        df = manager.get_stock_data(stock_code, 365)
+        if df is None or df.empty:
+            return jsonify({'error': '没有找到数据'}), 404
 
-                # 计算技术指标
-                df = analyzer.calculate_indicators(df)
-                
-        
-                signalMsg= check_signal.CheckSingle(stock_code, manager)
-                if signalMsg != None and signalMsg != "":
-                    print(signalMsg)
-        
+        # 规范数据类型
+        df['trade_date'] = pd.to_datetime(df['trade_date'])
+        numeric_columns = [
+            'open', 'close', 'high', 'low',
+            'volume', 'amount', 'p_change', 'turnover_rate'
+        ]
+        for col in numeric_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
 
-                # 计算振幅
-                #amplitude_info = calculate_amplitude(df)
-                
-                # 检查信号条件
-                check_signal_conditions(df, stock_code)
-                # 将DataFrame转换为字典列表
-                data = df.replace({np.nan: None}).to_dict('records')
-                response_data = {
-                    'data': data,
-                    'probabilities': "", #analyzer.calculate_probability(df),
-                    'signals': "", #analyzer.generate_signals(df),
-                    'amplitude': "" #amplitude_info
-                }
-                print(jsonify(response_data))
-                return jsonify(response_data)
-        return jsonify({'error': '没有找到数据'}), 404
+        # 计算技术指标
+        df = analyzer.calculate_indicators(df)
+
+        # 收集信号：单股策略信号 + BOLL 条件检查
+        signals_list = []
+        try:
+            signal_msg = check_signal.CheckSingle(stock_code, manager)
+            if signal_msg:
+                logger.info(f"单股信号 - {stock_code}: {signal_msg}")
+                signals_list.append({
+                    'type': '策略信号',
+                    'message': signal_msg,
+                    'signal': 'BUY',
+                    'strength': '-'
+                })
+        except Exception as e:
+            logger.error(f"执行单股信号检查失败 ({stock_code}): {e}", exc_info=True)
+
+        try:
+            boll_msg = check_signal_conditions(df, stock_code)
+            if boll_msg:
+                signals_list.append({
+                    'type': 'BOLL',
+                    'message': boll_msg,
+                    'signal': 'BUY',
+                    'strength': '-'
+                })
+        except Exception as e:
+            logger.error(f"检查信号条件失败 ({stock_code}): {e}", exc_info=True)
+
+        # 振幅统计（供前端展示）
+        amplitude_info = None
+        try:
+            amplitude_info = calculate_amplitude(df)
+        except Exception as e:
+            logger.debug(f"计算振幅跳过 ({stock_code}): {e}")
+
+        # 组装返回数据，统一为 JSON 结构
+        data = df.replace({np.nan: None}).to_dict('records')
+        response_data = {
+            'data': data,
+            'probabilities': {},       # 预留：analyzer.calculate_probability(df)
+            'signals': signals_list,
+            'amplitude': amplitude_info
+        }
+        return jsonify(response_data)
         
     except Exception as e:
         logger.error(f"获取股票数据失败: {str(e)}", exc_info=True)
@@ -304,6 +322,89 @@ def toggle_item_status(item):
         return jsonify({'error': str(e)}), 500
     finally:
         db.close()
+
+
+@bp.route('/chat_groups')
+def chat_groups_page():
+    return render_template('chat_groups.html')
+
+
+@bp.route('/api/chat_groups', methods=['GET'])
+def get_chat_groups():
+    try:
+        db = Database.Create()
+        db.ensure_message_group_tables()
+        groups = db.get_all_message_groups()
+        db.close()
+        return jsonify({'success': True, 'groups': groups})
+    except Exception as e:
+        logger.error(f"获取聊天群列表失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/chat_groups', methods=['POST'])
+def create_chat_group():
+    try:
+        data = request.get_json() or {}
+        group_id = data.get('group_id')
+        if group_id is None:
+            return jsonify({'success': False, 'message': '缺少 group_id'}), 400
+        try:
+            group_id = int(group_id)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': 'group_id 须为整数'}), 400
+        list_type = (data.get('list_type') or 'weixin').strip() or 'weixin'
+        chat_list = data.get('chat_list')
+        if not isinstance(chat_list, list):
+            chat_list = []
+        db = Database.Create()
+        ok, result = db.create_message_group(group_id=group_id, list_type=list_type, chat_list=chat_list)
+        db.close()
+        if ok:
+            return jsonify({'success': True, 'id': result})
+        return jsonify({'success': False, 'message': result or '创建失败'}), 400
+    except Exception as e:
+        logger.error(f"创建聊天群组失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/chat_groups/<int:pk_id>', methods=['PUT'])
+def update_chat_group(pk_id):
+    try:
+        data = request.get_json() or {}
+        group_id = data.get('group_id')
+        list_type = data.get('list_type')
+        chat_list = data.get('chat_list')
+        db = Database.Create()
+        if group_id is not None:
+            try:
+                group_id = int(group_id)
+            except (TypeError, ValueError):
+                db.close()
+                return jsonify({'success': False, 'message': 'group_id 须为整数'}), 400
+        ok, err = db.update_message_group(pk_id, group_id=group_id, list_type=list_type, chat_list=chat_list)
+        db.close()
+        if ok:
+            return jsonify({'success': True})
+        return jsonify({'success': False, 'message': err or '更新失败'}), 400
+    except Exception as e:
+        logger.error(f"更新聊天群组失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/chat_groups/<int:pk_id>', methods=['DELETE'])
+def delete_chat_group(pk_id):
+    try:
+        db = Database.Create()
+        ok = db.delete_message_group(pk_id)
+        db.close()
+        if ok:
+            return jsonify({'success': True})
+        return jsonify({'success': False, 'message': '删除失败'}), 400
+    except Exception as e:
+        logger.error(f"删除聊天群组失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 
 @bp.route('/api/update_stock_list', methods=['POST'])
 def update_stock_list_api():
@@ -696,18 +797,27 @@ def update_macd_settings():
 
 @bp.route('/api/register', methods=['POST'])
 def register():
-    data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
-    email = data.get('email')
-    
-    if not username or not password:
-        return jsonify({'success': False, 'message': '用户名和密码不能为空'})
-    
-    if db.create_user(username, password, email):
-        return jsonify({'success': True, 'message': '注册成功'})
-    else:
-        return jsonify({'success': False, 'message': '注册失败，用户名可能已存在'})
+    """用户注册。需 POST JSON: username, password, email(可选)。成功 201，参数错误 400，重复 409，服务器错误 500。"""
+    try:
+        data = request.get_json() or {}
+        username = (data.get('username') or '').strip()
+        password = data.get('password')
+        email = (data.get('email') or '').strip() or None
+
+        if not username or not password:
+            return jsonify({'success': False, 'message': '用户名和密码不能为空'}), 400
+
+        db = Database.Create()
+        db.init_database()  # 确保 users 表存在（CREATE TABLE IF NOT EXISTS）
+        ok, reason = db.create_user(username, password, email)
+        if ok:
+            return jsonify({'success': True, 'message': '注册成功'}), 201
+        if reason == 'duplicate':
+            return jsonify({'success': False, 'message': '用户名或邮箱已存在'}), 409
+        return jsonify({'success': False, 'message': '注册失败，请稍后重试'}), 400
+    except Exception as e:
+        logger.error(f"用户注册失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': '注册失败，请稍后重试'}), 500
 
 @bp.route('/api/login', methods=['POST'])
 def login():
@@ -1161,16 +1271,12 @@ def delete_nga_task(tid):
 
 @bp.route('/api/nga_message_groups', methods=['GET'])
 def get_nga_message_groups():
-    """获取消息群组列表（用于添加/编辑帖子时的下拉选择）"""
+    """获取消息群组列表（用于添加/编辑帖子时的下拉选择），从数据库读取。"""
     try:
-        from pathlib import Path
-        import yaml
-        config_path = Path('configs/send_message_group.yaml')
-        if not config_path.exists():
-            return jsonify({'success': True, 'groups': []})
-        with open(config_path, 'r', encoding='utf-8') as f:
-            data = yaml.safe_load(f) or {}
-        groups = data.get('groups', [])
+        db = Database.Create()
+        db.ensure_message_group_tables()
+        groups = db.get_all_message_groups()
+        db.close()
         out = [{'group_id': str(g.get('group_id', '')), 'chat_list': g.get('chat_list', [])} for g in groups]
         return jsonify({'success': True, 'groups': out})
     except Exception as e:
@@ -1307,43 +1413,85 @@ def calculate_amplitude(df):
         return None
 
 def check_signal_conditions(df, stock_code):
-    if df.empty:
-        return
-    
-    latest_data = df.iloc[-1]
-    
-    try:
-        '''
-        is_between_2_3_sigma = (latest_data['high'] >= latest_data['boll_upper2'] and 
-                               latest_data['high'] <= latest_data['boll_upper3'])
-        is_below_3_sigma = latest_data['high'] > latest_data['boll_upper3']
+    """根据最新一根K线的 BOLL / MACD / KDJ 情况，检测是否触发高位 BOLL 信号。
 
-        if is_between_2_3_sigma or is_below_3_sigma:
-            message = f"""
-股票 {stock_code} 出现BOLL带信号！
-日期: {latest_data['trade_date']}
-收盘价: {latest_data['close']:.2f}
-最低价: {latest_data['low']:.2f}
-成交量： {latest_data['volume'] / 10000:.2f}
-BOLL指标:
-- 中轨: {latest_data['boll_mid']:.2f}
-- 下轨(2σ): {latest_data['boll_lower2']:.2f}
-- 下轨(3σ): {latest_data['boll_lower3']:.2f}
-MACD指标:
-- MACD: {latest_data['macd']:.3f}
-- 信号线: {latest_data['macd_signal']:.3f}
-- 柱状值: {latest_data['macd_hist']:.3f}
-KDJ指标:
-- K值: {latest_data['k']:.2f}
-- D值: {latest_data['d']:.2f}
-- J值: {latest_data['j']:.2f}
-信号类型: {'低于3σ下轨' if is_below_3_sigma else '位于2σ-3σ之间'}
-"""
-            logger.info(f"触发信号 - 股票代码: {stock_code}")
-            '''
-        return "message"
+    入参校验：df 必须为非空 DataFrame，stock_code 为非空字符串；否则返回 None。
+    有信号时返回描述字符串，无信号或异常时返回 None。
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    if not stock_code or not isinstance(stock_code, str) or not str(stock_code).strip():
+        return None
+    stock_code = str(stock_code).strip()
+
+    latest_data = df.iloc[-1]
+
+    try:
+        # 安全地读取需要的字段，缺失时直接认为不触发信号
+        high = latest_data.get('high')
+        boll_upper2 = latest_data.get('boll_upper2')
+        boll_upper3 = latest_data.get('boll_upper3')
+
+        if high is None or boll_upper2 is None or boll_upper3 is None:
+            return None
+
+        is_between_2_3_sigma = (high >= boll_upper2 and high <= boll_upper3)
+        is_above_3_sigma = high > boll_upper3
+
+        if not (is_between_2_3_sigma or is_above_3_sigma):
+            return None
+
+        close = latest_data.get('close')
+        low = latest_data.get('low')
+        volume = latest_data.get('volume')
+        boll_mid = latest_data.get('boll_mid')
+        macd = latest_data.get('macd')
+        macd_signal = latest_data.get('macd_signal')
+        macd_hist = latest_data.get('macd_hist')
+        k_val = latest_data.get('k')
+        d_val = latest_data.get('d')
+        j_val = latest_data.get('j')
+
+        def _fmt(val, fmt, default='-'):
+            try:
+                if val is None:
+                    return default
+                return format(float(val), fmt)
+            except Exception:
+                return default
+
+        vol_wan = '-'
+        try:
+            if volume is not None:
+                vol_wan = format(float(volume) / 10000.0, '.2f')
+        except Exception:
+            pass
+
+        message = (
+            f"股票 {stock_code} 出现BOLL带信号！\n"
+            f"日期: {latest_data.get('trade_date')}\n"
+            f"收盘价: {_fmt(close, '.2f')}\n"
+            f"最低价: {_fmt(low, '.2f')}\n"
+            f"成交量： {vol_wan} 万手\n"
+            f"BOLL指标:\n"
+            f"- 中轨: {_fmt(boll_mid, '.2f')}\n"
+            f"- 上轨(2σ): {_fmt(boll_upper2, '.2f')}\n"
+            f"- 上轨(3σ): {_fmt(boll_upper3, '.2f')}\n"
+            f"MACD指标:\n"
+            f"- MACD: {_fmt(macd, '.3f')}\n"
+            f"- 信号线: {_fmt(macd_signal, '.3f')}\n"
+            f"- 柱状值: {_fmt(macd_hist, '.3f')}\n"
+            f"KDJ指标:\n"
+            f"- K值: {_fmt(k_val, '.2f')}\n"
+            f"- D值: {_fmt(d_val, '.2f')}\n"
+            f"- J值: {_fmt(j_val, '.2f')}\n"
+            f"信号类型: {'突破3σ上轨' if is_above_3_sigma else '位于2σ-3σ之间'}"
+        )
+        logger.info(f"触发BOLL信号 - 股票代码: {stock_code}")
+        return message
     except Exception as e:
-        logger.error(f"检查信号条件时出错: {str(e)}", exc_info=True) 
+        logger.error(f"检查信号条件时出错: {str(e)}", exc_info=True)
+        return None 
 
 @bp.route('/stock_filter')
 def stock_filter():
@@ -1354,15 +1502,16 @@ def stock_filter():
 def filter_stocks():
     """处理股票筛选请求"""
     try:
-        # 从 URL 参数中获取数据
+        # 从 URL 参数中获取数据；targetDate 可选，YYYY-MM-DD，不传则使用当前交易日
         data = {
             'market': request.args.get('market', 'CN'),
             'period': request.args.get('period', 'k1d'),
-            'filterSignal': request.args.getlist('filterSignal'),  # 获取多个值
+            'filterSignal': request.args.getlist('filterSignal'),
             'volume': request.args.get('volume', ''),
             'priceMin': request.args.get('priceMin'),
             'priceMax': request.args.get('priceMax'),
-            'dayRange': request.args.get('dayRange')
+            'dayRange': request.args.get('dayRange'),
+            'targetDate': request.args.get('targetDate'),  # 筛选基准日期，可选
         }
         
         filter = StockFilger()
@@ -1385,7 +1534,10 @@ def filter_stocks():
                 df = manager.get_stock_data(code, 365)
                 filterSignals = data['filterSignal']
                 dayRange = data['dayRange']
-                signal,avg_return ,positive_prob  = filter.filter_stock(df, dayRange, filterSignals)
+                target_date = data.get('targetDate')
+                signal, avg_return, positive_prob = filter.filter_stock(
+                    df, dayRange, filterSignals, target_date=target_date
+                )
                 newData = {"code": code, "avg_return": "{:.2f}".format(float(avg_return)), "positive_prob" : "{:.2f}".format(float(positive_prob) * 100)}
                 resultData.append(newData)
                 avg_returnAll = avg_returnAll + float(avg_return)
@@ -1455,20 +1607,22 @@ def filter_stocks():
 @bp.route('/api/save-timed-scan', methods=['POST'])
 def SaveTimedScan():
     data = request.get_json()
-    print("接收到的数据：", data)
-
+    if not data:
+        return jsonify({"success": False, "error": "请求体为空"}), 400
     scanManager = ScanManager()
-    return scanManager.SaveTimedScan(data)
+    success, response = scanManager.SaveTimedScan(data)
+    return response if success else (response, 500)
 
 @bp.route('/api/get-timed-scan-list', methods=['GET'])
 def get_TimedScan_List():
-    """定时扫描列表"""
+    """定时扫描列表，返回 JSON 数组 [{id, name}, ...]"""
     try:
         scanManager = ScanManager()
-        return scanManager.GetTimedScanList()
+        items = scanManager.GetTimedScanList()
+        return jsonify(items)
     except Exception as e:
-        logger.error(f"获取定时扫描列表失败: {str(e)}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        logger.error("获取定时扫描列表失败: %s", str(e), exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 ##########################################Scan Routes########################################
 
