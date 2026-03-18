@@ -1,0 +1,295 @@
+{% extends "index.html" %}
+
+{% block content %}
+<div class="container mt-4">
+  <h2>录入持仓操作</h2>
+
+  {% if error_message %}
+  <div class="alert alert-danger mt-3" role="alert">
+    {{ error_message }}
+  </div>
+  {% endif %}
+
+  <form class="mt-3" method="post" action="{{ url_for('main.position_trade_page') }}">
+    <div class="row mb-3">
+      <div class="col-md-3">
+        <label for="stock_code" class="form-label">股票代码</label>
+        <input type="text" class="form-control" id="stock_code" name="stock_code"
+               value="{{ default_stock_code or '' }}" required>
+      </div>
+      <div class="col-md-3">
+        <label for="stock_name" class="form-label">股票名称</label>
+        <input type="text" class="form-control" id="stock_name" name="stock_name"
+               value="{{ default_stock_name or '' }}" readonly>
+        <div class="form-text text-muted">输入股票代码后将从 stock_basic 自动查询并回填。</div>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label d-block">操作类型</label>
+        <div class="btn-group" role="group">
+          <input type="radio" class="btn-check" name="action" id="action_buy" value="buy"
+                 {% if (default_action or 'buy') == 'buy' %}checked{% endif %}>
+          <label class="btn btn-outline-success" for="action_buy">买入</label>
+
+          <input type="radio" class="btn-check" name="action" id="action_sell" value="sell"
+                 {% if default_action == 'sell' %}checked{% endif %}>
+          <label class="btn btn-outline-danger" for="action_sell">卖出</label>
+        </div>
+      </div>
+      <div class="col-md-3">
+        <label for="trade_date" class="form-label">成交日期</label>
+        <input type="date" class="form-control" id="trade_date" name="trade_date"
+               value="{{ today }}">
+      </div>
+    </div>
+
+    <div class="row mb-3">
+      <div class="col-md-3">
+        <label for="price" class="form-label">价格</label>
+        <input type="number" step="0.01" class="form-control" id="price" name="price" required>
+      </div>
+      <div class="col-md-3">
+        <label for="quantity" class="form-label">数量</label>
+        <input type="number" step="1" class="form-control" id="quantity" name="quantity" required>
+      </div>
+      <div class="col-md-3">
+        <label for="fee" class="form-label">手续费（可选）</label>
+        <input type="number" step="0.01" class="form-control" id="fee" name="fee" value="0">
+      </div>
+      <div class="col-md-3">
+        <label for="next" class="form-label">提交后跳转</label>
+        <select class="form-select" id="next" name="next">
+          <option value="positions" selected>返回持仓列表</option>
+          <option value="transactions">查看历史交易列表</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row mb-3">
+      <div class="col-md-4">
+        <label for="related_trade_id" class="form-label">关联操作 ID（可选，用于做 T 配对）</label>
+        <input type="number" class="form-control" id="related_trade_id" name="related_trade_id" placeholder="先输入股票代码并加载历史后选择">
+      </div>
+      <div class="col-md-4 d-flex align-items-end">
+        <button type="button" class="btn btn-outline-info w-100" id="load_history_btn">
+          加载该票历史操作
+        </button>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">本次操作与关联操作差价预估</label>
+        <div id="t_trade_diff" class="border rounded p-2 bg-light small">
+          输入价格、数量并选择关联操作后，将在此显示两次操作之间的价格差与理论盈亏。
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-3">
+      <button type="submit" class="btn btn-primary">提交操作</button>
+      <a href="{{ url_for('main.positions_page') }}" class="btn btn-secondary ms-2">返回持仓列表</a>
+      <a href="{{ url_for('main.positions_transactions_page') }}" class="btn btn-outline-secondary ms-2">查看历史交易</a>
+    </div>
+  </form>
+
+  <div class="mt-4">
+    <h5>该股票历史操作（仅在有持仓或有历史记录时展示，用于选择关联 ID）</h5>
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle" id="history_table">
+        <thead>
+          <tr>
+            <th scope="col">ID</th>
+            <th scope="col">日期</th>
+            <th scope="col">方向</th>
+            <th scope="col">价格</th>
+            <th scope="col">数量</th>
+            <th scope="col">手续费</th>
+            <th scope="col">金额</th>
+            <th scope="col">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="text-muted">
+            <td colspan="8">请输入股票代码并点击“加载该票历史操作”以查看并选择关联操作。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function() {
+    let historyRecords = [];
+    let stockNameTimer = null;
+
+    function setStockNameLoading(isLoading) {
+      const $name = $('#stock_name');
+      if (isLoading) {
+        $name.addClass('bg-light');
+      } else {
+        $name.removeClass('bg-light');
+      }
+    }
+
+    function normalizeForBasic(code) {
+      const c = (code || '').trim();
+      if (!c) return '';
+      const idx = c.indexOf('.');
+      return idx >= 0 ? c.slice(0, idx) : c;
+    }
+
+    function fetchStockNameFromBasic(code) {
+      const raw = (code || '').trim();
+      if (!raw) {
+        $('#stock_name').val('');
+        return;
+      }
+      const basicCode = normalizeForBasic(raw);
+      setStockNameLoading(true);
+      fetch('/api/stock_basic/' + encodeURIComponent(basicCode))
+        .then(resp => resp.json())
+        .then(data => {
+          if (data && data.success && data.found && data.data && data.data.name) {
+            $('#stock_name').val(data.data.name);
+          } else {
+            // 查不到不强行覆盖（保留当前值），但若为空则清空
+            if (!($('#stock_name').val() || '').trim()) {
+              $('#stock_name').val('');
+            }
+          }
+        })
+        .catch(() => {
+          // 忽略：不影响录入流程
+        })
+        .finally(() => {
+          setStockNameLoading(false);
+        });
+    }
+
+    function renderHistoryTable(records) {
+      const $tbody = $('#history_table tbody');
+      $tbody.empty();
+      if (!records || records.length === 0) {
+        $tbody.append(
+          '<tr class="text-muted"><td colspan="8">当前无历史操作记录。</td></tr>'
+        );
+        return;
+      }
+      records.forEach(function(r) {
+        const direction = (r.action || '').toLowerCase() === 'buy' ? '买入' : '卖出';
+        const rowHtml = `
+          <tr data-id="${r.id}" data-price="${r.price}" data-quantity="${r.quantity}">
+            <td>${r.id}</td>
+            <td>${r.trade_date || ''}</td>
+            <td>${direction}</td>
+            <td>${Number(r.price).toFixed(2)}</td>
+            <td>${Number(r.quantity)}</td>
+            <td>${Number(r.fee || 0).toFixed(2)}</td>
+            <td>${Number(r.amount || (r.price * r.quantity + (r.fee || 0))).toFixed(2)}</td>
+            <td>
+              <button type="button" class="btn btn-sm btn-outline-primary select-related-btn">
+                选择为关联操作
+              </button>
+            </td>
+          </tr>
+        `;
+        $tbody.append(rowHtml);
+      });
+    }
+
+    function updateTDiff() {
+      const relatedId = Number($('#related_trade_id').val());
+      const price = Number($('#price').val());
+      const quantity = Number($('#quantity').val());
+      const $diff = $('#t_trade_diff');
+      if (!relatedId || !price || !quantity) {
+        $diff.text('输入价格、数量并选择关联操作后，将在此显示两次操作之间的价格差与理论盈亏。');
+        return;
+      }
+      const record = historyRecords.find(r => Number(r.id) === relatedId);
+      if (!record) {
+        $diff.text('未找到对应的关联操作，请检查 ID 是否正确。');
+        return;
+      }
+      const basePrice = Number(record.price);
+      const baseQty = Number(record.quantity);
+      if (!basePrice || !baseQty) {
+        $diff.text('关联操作价格或数量无效，无法计算。');
+        return;
+      }
+      const usedQty = Math.min(quantity, baseQty);
+      const priceDiff = price - basePrice;
+      const profit = priceDiff * usedQty;
+      const directionHint = priceDiff > 0 ? '当前价高于关联操作' :
+                            priceDiff < 0 ? '当前价低于关联操作' :
+                            '当前价与关联操作相同';
+      $diff.html(
+        '关联操作 ID: <strong>' + relatedId + '</strong><br>' +
+        '关联价格: <strong>' + basePrice.toFixed(2) + '</strong>，本次价格: <strong>' + price.toFixed(2) + '</strong><br>' +
+        '价格差: <strong>' + priceDiff.toFixed(2) + '</strong> × 数量(取两次操作中较小者) <strong>' + usedQty + '</strong><br>' +
+        '理论盈亏(不含手续费差异): <strong>' + profit.toFixed(2) + '</strong><br>' +
+        '<span class="text-muted">' + directionHint + '，仅用于做 T 参考，不会影响实际记账。</span>'
+      );
+    }
+
+    $('#load_history_btn').on('click', function() {
+      const code = ($('#stock_code').val() || '').trim();
+      if (!code) {
+        alert('请先输入股票代码');
+        return;
+      }
+      $('#history_table tbody').html(
+        '<tr><td colspan="8"><div class="text-center text-muted">加载中...</div></td></tr>'
+      );
+      $.getJSON('/api/positions/' + encodeURIComponent(code) + '/history')
+        .done(function(res) {
+          if (!res || !res.success) {
+            const msg = (res && res.message) || '加载失败';
+            $('#history_table tbody').html(
+              '<tr><td colspan="8"><div class="text-danger">' + msg + '</div></td></tr>'
+            );
+            historyRecords = [];
+            return;
+          }
+          historyRecords = res.records || [];
+          renderHistoryTable(historyRecords);
+        })
+        .fail(function() {
+          $('#history_table tbody').html(
+            '<tr><td colspan="8"><div class="text-danger">请求历史记录失败，请稍后重试。</div></td></tr>'
+          );
+          historyRecords = [];
+        });
+    });
+
+    $('#history_table').on('click', '.select-related-btn', function() {
+      const $tr = $(this).closest('tr');
+      const id = $tr.data('id');
+      $('#related_trade_id').val(id);
+      $('#history_table tr').removeClass('table-primary');
+      $tr.addClass('table-primary');
+      updateTDiff();
+    });
+
+    $('#related_trade_id, #price, #quantity').on('input change', function() {
+      updateTDiff();
+    });
+
+    // 输入股票代码后自动回填名称（防抖）
+    $('#stock_code').on('input blur', function() {
+      const code = ($(this).val() || '').trim();
+      if (stockNameTimer) {
+        clearTimeout(stockNameTimer);
+      }
+      stockNameTimer = setTimeout(() => {
+        fetchStockNameFromBasic(code);
+      }, 300);
+    });
+
+    // 页面带默认 code 时，尝试回填一次
+    const initCode = ($('#stock_code').val() || '').trim();
+    if (initCode) {
+      fetchStockNameFromBasic(initCode);
+    }
+  })();
+</script>
+{% endblock %}
+

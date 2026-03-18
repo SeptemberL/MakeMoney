@@ -1,0 +1,78 @@
+{% extends "index.html" %}
+
+{% block content %}
+{% if embed %}
+<style>
+  nav.navbar { display: none !important; }
+  body { padding-top: 0 !important; }
+</style>
+{% endif %}
+<div class="container mt-4">
+  {% if not embed %}
+  <h2>历史交易列表</h2>
+  {% endif %}
+
+  {% if error_message %}
+  <div class="alert alert-danger mt-3" role="alert">
+    {{ error_message }}
+  </div>
+  {% endif %}
+
+  {% if not embed %}
+  <div class="mb-3">
+    <a href="{{ url_for('main.position_trade_page') }}" class="btn btn-primary">添加操作</a>
+    <a href="{{ url_for('main.positions_page') }}" class="btn btn-outline-secondary ms-2">返回持仓列表</a>
+  </div>
+  {% endif %}
+
+  <div class="table-responsive">
+    <table class="table table-striped table-sm">
+      <thead>
+        <tr>
+          <th>日期</th>
+          <th>股票代码</th>
+          <th>名称</th>
+          <th>操作</th>
+          <th class="text-end">价格</th>
+          <th class="text-end">数量</th>
+          <th class="text-end">手续费</th>
+          <th class="text-end">成交金额</th>
+          <th>创建时间</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if transactions %}
+          {% for t in transactions %}
+          <tr>
+            <td>{{ t.trade_date or '' }}</td>
+            <td>
+              <a href="{{ url_for('main.position_history_page', stock_code=t.stock_code) }}">
+                {{ t.stock_code }}
+              </a>
+            </td>
+            <td>{{ t.stock_name or '' }}</td>
+            <td>
+              {% if t.action == 'buy' %}
+                <span class="text-success">买入</span>
+              {% else %}
+                <span class="text-danger">卖出</span>
+              {% endif %}
+            </td>
+            <td class="text-end">{{ '%.2f'|format(t.price or 0) }}</td>
+            <td class="text-end">{{ '%.2f'|format(t.quantity or 0) }}</td>
+            <td class="text-end">{{ '%.2f'|format(t.fee or 0) }}</td>
+            <td class="text-end">{{ '%.2f'|format(t.amount or 0) }}</td>
+            <td>{{ t.created_at or '' }}</td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr>
+            <td colspan="9" class="text-center text-muted">暂无交易记录</td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+

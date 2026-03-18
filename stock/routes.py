@@ -4,7 +4,9 @@ from flask import (Blueprint,
                    request,
                    session,
                    Response,
-                   stream_with_context)
+                   stream_with_context,
+                   redirect,
+                   url_for)
 from stocks.stock_fetcher import StockFetcher
 from stocks.stock_analyzer import StockAnalyzer
 from database.database import Database
@@ -115,6 +117,701 @@ def quant():
 def market_open_score():
     """今日大盘开盘评分"""
     return render_template('market_open_score.html')
+
+
+def _get_positions_with_market():
+    """
+    获取持仓信息以及当前价/总市值（只读视图）。
+    当前价来自 stock_data 中该股票最近一个交易日的 close。
+    """
+    db = Database.Create()
+    try:
+        from datetime import datetime as _dt
+        # 兼容 SQLite / MySQL 的最近交易日查询
+        if db.is_sqlite:
+            sql = """
+                SELECT
+                    p.id,
+                    p.stock_code,
+                    COALESCE(p.stock_name, s.name) AS stock_name,
+                    p.quantity,
+                    p.cost_price,
+                    p.created_at,
+                    sd.close AS current_price,
+                    CASE
+                        WHEN sd.close IS NOT NULL THEN p.quantity * sd.close
+                        ELSE NULL
+                    END AS total_value
+                FROM positions p
+                LEFT JOIN stocks s ON s.code = p.stock_code
+                LEFT JOIN stock_data sd
+                  ON sd.stock_code = p.stock_code
+                 AND sd.trade_date = (
+                    SELECT MAX(sd2.trade_date)
+                    FROM stock_data sd2
+                    WHERE sd2.stock_code = p.stock_code
+                 )
+                ORDER BY p.id DESC
+            """
+        else:
+            sql = """
+                SELECT
+                    p.id,
+                    p.stock_code,
+                    COALESCE(p.stock_name, s.name) AS stock_name,
+                    p.quantity,
+                    p.cost_price,
+                    p.created_at,
+                    sd.close AS current_price,
+                    CASE
+                        WHEN sd.close IS NOT NULL THEN p.quantity * sd.close
+                        ELSE NULL
+                    END AS total_value
+                FROM positions p
+                LEFT JOIN stocks s ON s.code = p.stock_code
+                LEFT JOIN stock_data sd
+                  ON sd.stock_code = p.stock_code
+                 AND sd.trade_date = (
+                    SELECT MAX(sd2.trade_date)
+                    FROM stock_data sd2
+                    WHERE sd2.stock_code = p.stock_code
+                 )
+                ORDER BY p.id DESC
+            """
+        rows = db.fetch_all(sql) or []
+        _fill_positions_stock_name_from_basic(db, rows)
+
+        # 计算持仓天数：按日期计算（首次买入 trade_date -> 今天日期；查不到则回退 created_at）
+        today = _dt.now().date()
+        # 1) 批量取每个持仓股票的首次买入日期
+        first_buy_map = {}
+        try:
+            codes = [r.get("stock_code") for r in rows if r.get("stock_code")]
+            codes = sorted(set([c for c in codes if isinstance(c, str) and c.strip()]))
+            if codes:
+                if db.is_sqlite:
+                    placeholders = ",".join(["?"] * len(codes))
+                else:
+                    placeholders = ",".join(["%s"] * len(codes))
+                buy_rows = db.fetch_all(
+                    f"""
+                    SELECT stock_code, MIN(trade_date) AS first_buy_date
+                    FROM transactions
+                    WHERE action='buy' AND stock_code IN ({placeholders})
+                    GROUP BY stock_code
+                    """,
+                    tuple(codes),
+                )
+                for br in buy_rows or []:
+                    sc = br.get("stock_code")
+                    fd = br.get("first_buy_date")
+                    if sc and fd:
+                        first_buy_map[sc] = fd
+        except Exception:
+            first_buy_map = {}
+
+        for r in rows:
+            holding_days = None
+            try:
+                stock_code = r.get("stock_code")
+                base_date_raw = first_buy_map.get(stock_code)
+                base_date = None
+
+                if isinstance(base_date_raw, str):
+                    # trade_date 一般为 'YYYY-MM-DD'
+                    try:
+                        base_date = _dt.strptime(base_date_raw, "%Y-%m-%d").date()
+                    except ValueError:
+                        base_date = _dt.fromisoformat(base_date_raw.replace("Z", "+00:00")).date()
+                elif hasattr(base_date_raw, "date"):
+                    base_date = base_date_raw.date()
+
+                if base_date is None:
+                    created_at = r.get("created_at")
+                    if isinstance(created_at, str):
+                        created_dt = None
+                        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                            try:
+                                created_dt = _dt.strptime(created_at, fmt)
+                                break
+                            except ValueError:
+                                continue
+                        if created_dt is None:
+                            created_dt = _dt.fromisoformat(created_at.replace("Z", "+00:00"))
+                        base_date = created_dt.date()
+                    elif hasattr(created_at, "date"):
+                        base_date = created_at.date()
+
+                if base_date:
+                    holding_days = (today - base_date).days
+            except Exception:
+                holding_days = None
+            r["holding_days"] = holding_days
+        return rows
+    except Exception as e:
+        logger.error("获取持仓信息失败: %s", e, exc_info=True)
+        return []
+    finally:
+        db.close()
+
+
+def _normalize_stock_code_for_basic(stock_code: str) -> str:
+    """
+    将业务中可能出现的股票代码规范化为 stock_basic.code 形式（通常为 A 股 6 位数字）。
+    例：600000.SS / 600000.SH / 600000 -> 600000
+    """
+    code = (stock_code or "").strip()
+    if not code:
+        return ""
+    if "." in code:
+        code = code.split(".", 1)[0].strip()
+    return code
+
+
+def _lookup_stock_name_from_basic(db: Database, stock_code: str) -> str | None:
+    """按股票代码从 stock_basic 查名称；查不到返回 None。"""
+    code = _normalize_stock_code_for_basic(stock_code)
+    if not code:
+        return None
+    try:
+        row = db.fetch_one("SELECT name FROM stock_basic WHERE code=%s LIMIT 1", (code,))
+        if row and row.get("name"):
+            return row.get("name")
+    except Exception:
+        pass
+    return None
+
+
+def _fill_positions_stock_name_from_basic(db: Database, positions_rows: list) -> None:
+    """
+    对持仓列表 rows 就地补全 stock_name：
+    - 若 stock_basic 有对应名称，则以其为准写回 rows[*].stock_name
+    """
+    if not positions_rows:
+        return
+    codes = []
+    for r in positions_rows:
+        c = _normalize_stock_code_for_basic(r.get("stock_code"))
+        if c:
+            codes.append(c)
+    codes = sorted(set(codes))
+    if not codes:
+        return
+    try:
+        if db.is_sqlite:
+            placeholders = ",".join(["?"] * len(codes))
+        else:
+            placeholders = ",".join(["%s"] * len(codes))
+        rows = db.fetch_all(
+            f"SELECT code, name FROM stock_basic WHERE code IN ({placeholders})",
+            tuple(codes),
+        )
+        name_map = {str(r.get("code")): (r.get("name") or "") for r in (rows or [])}
+        for r in positions_rows:
+            key = _normalize_stock_code_for_basic(r.get("stock_code"))
+            nm = name_map.get(key)
+            if nm:
+                r["stock_name"] = nm
+    except Exception:
+        # 仅用于展示增强，失败不影响主流程
+        return
+
+
+def _fill_records_stock_name_from_basic(db: Database, rows: list, code_key: str = "stock_code") -> None:
+    """对任意 rows 批量补全 stock_name 字段（来自 stock_basic）。"""
+    if not rows:
+        return
+    codes = []
+    for r in rows:
+        c = _normalize_stock_code_for_basic(r.get(code_key))
+        if c:
+            codes.append(c)
+    codes = sorted(set(codes))
+    if not codes:
+        return
+    try:
+        if db.is_sqlite:
+            placeholders = ",".join(["?"] * len(codes))
+        else:
+            placeholders = ",".join(["%s"] * len(codes))
+        got = db.fetch_all(
+            f"SELECT code, name FROM stock_basic WHERE code IN ({placeholders})",
+            tuple(codes),
+        )
+        name_map = {str(r.get("code")): (r.get("name") or "") for r in (got or [])}
+        for r in rows:
+            key = _normalize_stock_code_for_basic(r.get(code_key))
+            nm = name_map.get(key)
+            if nm:
+                r["stock_name"] = nm
+    except Exception:
+        return
+
+
+@bp.route('/positions')
+def positions_page():
+    """持仓列表页面（只读）"""
+    positions = _get_positions_with_market()
+    return render_template('positions.html', positions=positions)
+
+
+@bp.route('/positions/trade', methods=['GET', 'POST'])
+def position_trade_page():
+    """
+    表单方式录入一笔买入/卖出操作：
+    - GET: 展示表单
+    - POST: 处理表单提交，调用 _apply_position_trade 并重定向
+    """
+    from datetime import date
+
+    if request.method == 'GET':
+        today = date.today().strftime('%Y-%m-%d')
+        stock_code = (request.args.get('stock_code') or '').strip()
+        stock_name = (request.args.get('stock_name') or '').strip()
+        return render_template(
+            'positions_trade.html',
+            today=today,
+            default_action='buy',
+            default_stock_code=stock_code,
+            default_stock_name=stock_name,
+            error_message=None,
+        )
+
+    # POST
+    form = request.form
+    stock_code = (form.get('stock_code') or '').strip()
+    stock_name = (form.get('stock_name') or '').strip() or None
+    action = (form.get('action') or '').lower()
+    price = form.get('price')
+    quantity = form.get('quantity')
+    fee = form.get('fee', 0)
+    trade_date = form.get('trade_date')
+    next_target = form.get('next', 'positions').strip() or 'positions'
+
+    error_message = None
+
+    if not stock_code:
+        error_message = '股票代码不能为空'
+    elif action not in ('buy', 'sell'):
+        error_message = '操作类型必须为买入或卖出'
+    else:
+        try:
+            price = float(price)
+            quantity = float(quantity)
+            fee = float(fee or 0)
+        except (TypeError, ValueError):
+            error_message = '价格、数量、手续费必须为数值'
+        else:
+            if price <= 0 or quantity <= 0:
+                error_message = '价格和数量必须大于 0'
+
+    from datetime import datetime as _dt
+    if not trade_date:
+        trade_date = _dt.now().strftime('%Y-%m-%d')
+
+    if error_message:
+        today = trade_date
+        return render_template(
+            'positions_trade.html',
+            today=today,
+            default_action=action or 'buy',
+            default_stock_code=stock_code,
+            default_stock_name=stock_name or '',
+            error_message=error_message,
+        )
+
+    db = Database.Create()
+    try:
+        db.begin_transaction()
+        # 名称以 stock_basic 为准（若存在）
+        basic_name = _lookup_stock_name_from_basic(db, stock_code)
+        if basic_name:
+            stock_name = basic_name
+        _apply_position_trade(
+            db=db,
+            stock_code=stock_code,
+            stock_name=stock_name,
+            action=action,
+            price=price,
+            quantity=quantity,
+            fee=fee,
+            trade_date=trade_date,
+        )
+        db.commit()
+    except ValueError as ve:
+        db.rollback()
+        error_message = str(ve)
+        today = trade_date
+        return render_template(
+            'positions_trade.html',
+            today=today,
+            default_action=action or 'buy',
+            default_stock_code=stock_code,
+            default_stock_name=stock_name or '',
+            error_message=error_message,
+        )
+    except Exception as e:
+        db.rollback()
+        logger.error('表单录入买卖操作失败: %s', e, exc_info=True)
+        error_message = '服务器内部错误，请稍后重试'
+        today = trade_date
+        return render_template(
+            'positions_trade.html',
+            today=today,
+            default_action=action or 'buy',
+            default_stock_code=stock_code,
+            default_stock_name=stock_name or '',
+            error_message=error_message,
+        )
+    finally:
+        db.close()
+
+    if next_target == 'transactions':
+        return redirect(url_for('main.positions_transactions_page'))
+    return redirect(url_for('main.positions_page'))
+
+
+def _apply_position_trade(db, stock_code: str, stock_name: str, action: str,
+                          price: float, quantity: float, fee: float,
+                          trade_date: str):
+    """在一个已打开的 db 连接上应用一笔买入/卖出，并写入 transactions 与更新 positions。"""
+    # 写入交易流水
+    db.execute(
+        '''INSERT INTO transactions
+           (stock_code, action, price, quantity, fee, trade_date)
+           VALUES (%s, %s, %s, %s, %s, %s)''',
+        (stock_code, action, price, quantity, fee, trade_date)
+    )
+    # 查询现有持仓
+    row = db.fetch_one(
+        'SELECT stock_code, stock_name, quantity, cost_price FROM positions WHERE stock_code = %s',
+        (stock_code,)
+    )
+    if action == 'buy':
+        if row:
+            old_qty = float(row['quantity'] or 0)
+            old_cost = float(row['cost_price'] or 0)
+            new_qty = old_qty + quantity
+            if new_qty <= 0:
+                # 极端情况，直接删除持仓
+                db.execute('DELETE FROM positions WHERE stock_code = %s', (stock_code,))
+            else:
+                total_cost = old_cost * old_qty + price * quantity + fee
+                new_cost = total_cost / new_qty
+                db.execute(
+                    '''UPDATE positions
+                       SET quantity = %s, cost_price = %s, stock_name = %s, updated_at = CURRENT_TIMESTAMP
+                       WHERE stock_code = %s''',
+                    (new_qty, new_cost, stock_name or row.get('stock_name'), stock_code)
+                )
+        else:
+            db.execute(
+                '''INSERT INTO positions
+                   (stock_code, stock_name, quantity, cost_price)
+                   VALUES (%s, %s, %s, %s)''',
+                (stock_code, stock_name, quantity, price)
+            )
+    elif action == 'sell':
+        if not row:
+            raise ValueError('无持仓可卖出')
+        old_qty = float(row['quantity'] or 0)
+        if quantity > old_qty:
+            raise ValueError('卖出数量大于持仓数量')
+        new_qty = old_qty - quantity
+        if new_qty <= 0:
+            # 卖光后从当前持仓中移除（历史信息保留在 transactions 中）
+            db.execute('DELETE FROM positions WHERE stock_code = %s', (stock_code,))
+        else:
+            # 简化处理：保留原成本价
+            db.execute(
+                '''UPDATE positions
+                   SET quantity = %s, updated_at = CURRENT_TIMESTAMP
+                   WHERE stock_code = %s''',
+                (new_qty, stock_code)
+            )
+    else:
+        raise ValueError('未知的操作类型')
+
+
+@bp.route('/api/positions/trade', methods=['POST'])
+def api_position_trade():
+    """
+    录入一笔买入/卖出操作：
+    body: {stock_code, stock_name?, action: buy/sell, price, quantity, fee?, trade_date?}
+    """
+    data = request.get_json() or {}
+    stock_code = (data.get('stock_code') or '').strip()
+    stock_name = (data.get('stock_name') or '').strip() or None
+    action = (data.get('action') or '').lower()
+    price = data.get('price')
+    quantity = data.get('quantity')
+    fee = data.get('fee') or 0
+    trade_date = data.get('trade_date')
+
+    if not stock_code:
+        return jsonify({'success': False, 'message': '股票代码不能为空'}), 400
+    if action not in ('buy', 'sell'):
+        return jsonify({'success': False, 'message': 'action 只能为 buy 或 sell'}), 400
+    try:
+        price = float(price)
+        quantity = float(quantity)
+        fee = float(fee)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'price/quantity/fee 必须是数值'}), 400
+    if price <= 0 or quantity <= 0:
+        return jsonify({'success': False, 'message': 'price 和 quantity 必须大于 0'}), 400
+
+    if not trade_date:
+        trade_date = datetime.now().strftime('%Y-%m-%d')
+
+    db = Database.Create()
+    try:
+        db.begin_transaction()
+        basic_name = _lookup_stock_name_from_basic(db, stock_code)
+        if basic_name:
+            stock_name = basic_name
+        _apply_position_trade(
+            db=db,
+            stock_code=stock_code,
+            stock_name=stock_name,
+            action=action,
+            price=price,
+            quantity=quantity,
+            fee=fee,
+            trade_date=trade_date,
+        )
+        db.commit()
+        return jsonify({'success': True})
+    except ValueError as ve:
+        db.rollback()
+        return jsonify({'success': False, 'message': str(ve)}), 400
+    except Exception as e:
+        db.rollback()
+        logger.error('录入买卖操作失败: %s', e, exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+    finally:
+        db.close()
+
+
+@bp.route('/api/stock_basic/<stock_code>', methods=['GET'])
+def get_stock_basic_by_code_api(stock_code):
+    """按股票代码查询 stock_basic（用于前端输入代码后自动回填名称）"""
+    stock_code = (stock_code or '').strip()
+    if not stock_code:
+        return jsonify({'success': False, 'message': '股票代码不能为空'}), 400
+    db = Database.Create()
+    try:
+        code = _normalize_stock_code_for_basic(stock_code)
+        row = db.fetch_one("SELECT code, name, market, exchange, list_date, industry, area, status FROM stock_basic WHERE code=%s LIMIT 1", (code,))
+        if not row:
+            return jsonify({'success': True, 'found': False, 'code': code})
+        return jsonify({'success': True, 'found': True, 'data': row})
+    except Exception as e:
+        logger.error("查询 stock_basic 失败: %s", str(e), exc_info=True)
+        return jsonify({'success': False, 'message': f'查询失败: {str(e)}'}), 500
+    finally:
+        db.close()
+
+
+@bp.route('/api/quotes/tencent', methods=['POST'])
+def api_quotes_tencent():
+    """批量获取腾讯实时行情（用于持仓页定时刷新）。"""
+    data = request.get_json() or {}
+    codes = data.get('codes') or []
+    if not isinstance(codes, list):
+        return jsonify({'success': False, 'message': 'codes 必须为 list'}), 400
+    codes = [str(c).strip() for c in codes if str(c).strip()]
+    if not codes:
+        return jsonify({'success': True, 'quotes': {}})
+    try:
+        from stocks.stock_quote_tencent import fetch_quotes
+
+        quotes = fetch_quotes(codes)
+        out = {}
+        for k, q in (quotes or {}).items():
+            out[k] = {
+                'code': q.code,
+                'name': q.name,
+                'now': q.now,
+                'prev_close': q.prev_close,
+            }
+        return jsonify({'success': True, 'quotes': out})
+    except Exception as e:
+        logger.error("腾讯行情获取失败: %s", str(e), exc_info=True)
+        return jsonify({'success': False, 'message': f'腾讯行情获取失败: {str(e)}'}), 500
+
+
+@bp.route('/api/positions/<stock_code>/history', methods=['GET'])
+def api_position_history(stock_code):
+    """获取某只股票的历史交易记录"""
+    stock_code = (stock_code or '').strip()
+    if not stock_code:
+        return jsonify({'success': False, 'message': '股票代码不能为空'}), 400
+    db = Database.Create()
+    try:
+        rows = db.fetch_all(
+            '''SELECT id, stock_code, action, price, quantity, fee, trade_date, created_at
+               FROM transactions
+               WHERE stock_code = %s
+               ORDER BY trade_date DESC, id DESC''',
+            (stock_code,)
+        )
+        records = []
+        for r in rows or []:
+            amount = float(r.get('price') or 0) * float(r.get('quantity') or 0) + float(r.get('fee') or 0)
+            records.append({
+                'id': r.get('id'),
+                'stock_code': r.get('stock_code'),
+                'action': r.get('action'),
+                'price': float(r.get('price') or 0),
+                'quantity': float(r.get('quantity') or 0),
+                'fee': float(r.get('fee') or 0),
+                'trade_date': r.get('trade_date'),
+                'created_at': r.get('created_at'),
+                'amount': amount,
+            })
+        return jsonify({'success': True, 'records': records})
+    except Exception as e:
+        logger.error('获取交易历史失败: %s', e, exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+    finally:
+        db.close()
+
+
+@bp.route('/positions/transactions')
+def positions_transactions_page():
+    """所有交易流水列表页面（历史池子）"""
+    embed = (request.args.get('embed') or '').strip() in ('1', 'true', 'yes', 'on')
+    db = Database.Create()
+    try:
+        rows = db.fetch_all(
+            '''SELECT id, stock_code, action, price, quantity, fee, trade_date, created_at
+               FROM transactions
+               ORDER BY trade_date DESC, id DESC'''
+        )
+        records = []
+        for r in rows or []:
+            price = float(r.get('price') or 0)
+            qty = float(r.get('quantity') or 0)
+            fee = float(r.get('fee') or 0)
+            amount = price * qty + fee
+            records.append({
+                'id': r.get('id'),
+                'stock_code': r.get('stock_code'),
+                'stock_name': '',
+                'action': r.get('action'),
+                'price': price,
+                'quantity': qty,
+                'fee': fee,
+                'trade_date': r.get('trade_date'),
+                'created_at': r.get('created_at'),
+                'amount': amount,
+            })
+        _fill_records_stock_name_from_basic(db, records, code_key="stock_code")
+        return render_template('positions_transactions.html', transactions=records, embed=embed)
+    except Exception as e:
+        logger.error('加载交易流水页面失败: %s', e, exc_info=True)
+        return render_template('positions_transactions.html', transactions=[], error_message='加载交易流水失败', embed=embed)
+    finally:
+        db.close()
+
+
+@bp.route('/positions/<stock_code>/history_page')
+def position_history_page(stock_code):
+    """单票历史交易明细页面"""
+    stock_code = (stock_code or '').strip()
+    if not stock_code:
+        return render_template('position_history.html', stock_code='', stock_name='', records=[], summary={}, error_message='股票代码不能为空')
+
+    db = Database.Create()
+    try:
+        # 查询基本交易记录
+        rows = db.fetch_all(
+            '''SELECT stock_code, action, price, quantity, fee, trade_date, created_at
+               FROM transactions
+               WHERE stock_code = %s
+               ORDER BY trade_date DESC, id DESC''',
+            (stock_code,)
+        )
+        records = []
+        total_buy_qty = 0.0
+        total_sell_qty = 0.0
+        total_buy_amount = 0.0
+        total_sell_amount = 0.0
+        for r in rows or []:
+            action = (r.get('action') or '').lower()
+            price = float(r.get('price') or 0)
+            qty = float(r.get('quantity') or 0)
+            fee = float(r.get('fee') or 0)
+            amount = price * qty + fee
+            if action == 'buy':
+                total_buy_qty += qty
+                total_buy_amount += amount
+            elif action == 'sell':
+                total_sell_qty += qty
+                total_sell_amount += amount
+            records.append({
+                'stock_code': r.get('stock_code'),
+                'action': action,
+                'price': price,
+                'quantity': qty,
+                'fee': fee,
+                'trade_date': r.get('trade_date'),
+                'created_at': r.get('created_at'),
+                'amount': amount,
+            })
+
+        # 获取当前持仓名称/数量/成本价（如有）
+        pos = db.fetch_one(
+            '''SELECT stock_name, quantity, cost_price
+               FROM positions
+               WHERE stock_code = %s''',
+            (stock_code,)
+        )
+        stock_name = ''
+        current_qty = None
+        current_cost_price = None
+        if pos:
+            stock_name = pos.get('stock_name') or ''
+            current_qty = float(pos.get('quantity') or 0)
+            current_cost_price = float(pos.get('cost_price') or 0)
+
+        # 页面展示名称优先取 stock_basic（若存在）
+        basic_name = _lookup_stock_name_from_basic(db, stock_code)
+        if basic_name:
+            stock_name = basic_name
+
+        net_quantity = total_buy_qty - total_sell_qty
+        summary = {
+            'total_buy_quantity': total_buy_qty,
+            'total_sell_quantity': total_sell_qty,
+            'net_quantity': net_quantity,
+            'total_buy_amount': total_buy_amount,
+            'total_sell_amount': total_sell_amount,
+            'current_position_quantity': current_qty,
+            'current_cost_price': current_cost_price,
+        }
+
+        return render_template(
+            'position_history.html',
+            stock_code=stock_code,
+            stock_name=stock_name,
+            records=records,
+            summary=summary,
+            error_message=None,
+        )
+    except Exception as e:
+        logger.error('加载单票历史页面失败: %s', e, exc_info=True)
+        return render_template(
+            'position_history.html',
+            stock_code=stock_code,
+            stock_name='',
+            records=[],
+            summary={},
+            error_message='加载单票历史失败',
+        )
+    finally:
+        db.close()
 
 @bp.route('/api/stocks', methods=['GET'])
 def get_stocks():
@@ -426,6 +1123,29 @@ def update_stock_list_api():
             'success': False,
             'message': '股票列表更新失败'
         }), 500
+
+
+@bp.route('/api/stock_basic/sync', methods=['POST'])
+def sync_stock_basic_api():
+    """手动触发：从 AKShare 同步股票基础信息到 stock_basic 表（用于测试按钮）"""
+    try:
+        from stocks.stock_basic_manager import StockBasicManager
+
+        # 确保表结构存在（MySQL/SQLite 双引擎）
+        db = Database.Create()
+        try:
+            db.init_database()
+        finally:
+            db.close()
+
+        n = StockBasicManager().sync_from_akshare()
+        return jsonify({'success': True, 'written': n, 'message': f'已同步 {n} 条股票基础信息'})
+    except ImportError as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+    except Exception as e:
+        logger.error("同步 stock_basic 失败: %s", str(e), exc_info=True)
+        return jsonify({'success': False, 'message': f'同步失败: {str(e)}'}), 500
+
 
 @bp.route('/api/fetch_today_stocks', methods=['POST'])
 def fetch_today_stocks_api():

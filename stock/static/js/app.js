@@ -853,6 +853,54 @@ function fetchTodayStocks() {
     });
 }
 
+// 同步股票基础信息（AKShare -> stock_basic）
+function syncStockBasic() {
+    const button = document.getElementById('syncStockBasicBtn');
+    const status = document.getElementById('syncStockBasicStatus');
+
+    if (!button || !status) {
+        alert('页面元素缺失：syncStockBasicBtn / syncStockBasicStatus');
+        return;
+    }
+
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 同步中...';
+    status.innerHTML = '';
+    const startedAt = Date.now();
+
+    fetch('/api/stock_basic/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+        if (data.success) {
+            const written = (typeof data.written === 'number') ? data.written : null;
+            const msg = data.message || '同步成功';
+            const tail = (written !== null) ? `（written=${written}，${elapsedSec}s）` : `（${elapsedSec}s）`;
+            status.innerHTML = '<span class="text-success">' + msg + tail + '</span>';
+
+            // 10 秒后自动清空成功提示，避免一直占位
+            setTimeout(() => {
+                if (status.querySelector('.text-success')) {
+                    status.innerHTML = '';
+                }
+            }, 10000);
+        } else {
+            status.innerHTML = '<span class="text-danger">' + (data.message || '同步失败') + `（${elapsedSec}s）</span>`;
+        }
+    })
+    .catch(error => {
+        const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+        status.innerHTML = '<span class="text-danger">请求失败: ' + error + `（${elapsedSec}s）</span>`;
+    })
+    .finally(() => {
+        button.disabled = false;
+        button.innerHTML = '<i class="fas fa-sync-alt"></i> 同步股票基础信息 (AKShare)';
+    });
+}
+
 // 使用 Tushare 拉取当天日线行情
 function fetchTodayTushare() {
     const button = document.getElementById('fetchTodayTushareBtn');

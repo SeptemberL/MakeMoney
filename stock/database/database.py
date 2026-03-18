@@ -267,6 +267,24 @@ class Database:
             alert_lower_threshold REAL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
+        self.execute('''CREATE TABLE IF NOT EXISTS stock_basic (
+            code TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            market TEXT,
+            exchange TEXT,
+            list_date TEXT,
+            industry TEXT,
+            area TEXT,
+            status INTEGER DEFAULT 1,
+            source TEXT DEFAULT 'akshare',
+            raw_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        try:
+            self.execute("CREATE INDEX IF NOT EXISTS idx_stock_basic_market ON stock_basic (market)")
+        except Exception:
+            pass
         self.execute('''CREATE TABLE IF NOT EXISTS stock_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             stock_code TEXT NOT NULL,
@@ -301,6 +319,33 @@ class Database:
             last_login TIMESTAMP,
             settings TEXT
         )''')
+        # 仓位相关表
+        self.execute('''CREATE TABLE IF NOT EXISTS positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_code TEXT NOT NULL,
+            stock_name TEXT,
+            quantity REAL NOT NULL,
+            cost_price REAL NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        self.execute('''CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_code TEXT NOT NULL,
+            action TEXT NOT NULL,
+            price REAL NOT NULL,
+            quantity REAL NOT NULL,
+            fee REAL DEFAULT 0,
+            trade_date DATE NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        self.execute('''CREATE TABLE IF NOT EXISTS portfolio (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            total_capital REAL DEFAULT 0,
+            available_cash REAL DEFAULT 0,
+            market_value REAL DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
         self._create_message_group_tables_sqlite()
 
     def _create_message_group_tables_sqlite(self):
@@ -332,6 +377,21 @@ class Database:
             alert_upper_threshold DOUBLE DEFAULT 0,
             alert_lower_threshold DOUBLE DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+        self.execute('''CREATE TABLE IF NOT EXISTS stock_basic (
+            code VARCHAR(32) PRIMARY KEY,
+            name VARCHAR(128) NOT NULL,
+            market VARCHAR(16) DEFAULT NULL,
+            exchange VARCHAR(16) DEFAULT NULL,
+            list_date VARCHAR(16) DEFAULT NULL,
+            industry VARCHAR(128) DEFAULT NULL,
+            area VARCHAR(64) DEFAULT NULL,
+            status TINYINT DEFAULT 1,
+            source VARCHAR(32) DEFAULT 'akshare',
+            raw_json JSON DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            KEY idx_stock_basic_market (market)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
         self.execute('''CREATE TABLE IF NOT EXISTS stock_data (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -366,6 +426,33 @@ class Database:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_login TIMESTAMP NULL,
             settings TEXT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+        # 仓位相关表
+        self.execute('''CREATE TABLE IF NOT EXISTS positions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            stock_code VARCHAR(32) NOT NULL,
+            stock_name VARCHAR(128),
+            quantity DOUBLE NOT NULL,
+            cost_price DOUBLE NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+        self.execute('''CREATE TABLE IF NOT EXISTS transactions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            stock_code VARCHAR(32) NOT NULL,
+            action VARCHAR(8) NOT NULL,
+            price DOUBLE NOT NULL,
+            quantity DOUBLE NOT NULL,
+            fee DOUBLE DEFAULT 0,
+            trade_date DATE NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+        self.execute('''CREATE TABLE IF NOT EXISTS portfolio (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            total_capital DOUBLE DEFAULT 0,
+            available_cash DOUBLE DEFAULT 0,
+            market_value DOUBLE DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
         self._create_message_group_tables_mysql()
 

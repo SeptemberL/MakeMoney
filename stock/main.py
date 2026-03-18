@@ -77,6 +77,15 @@ app.config['MYSQL_DB'] = config.get('DATABASE', 'DB_NAME') # MySQL数据库名
 app.secret_key = 'your-secret-key-here'  # 请更改为随机字符串
 
 
+# 确保当前数据库（MySQL / SQLite）中的业务表已创建
+try:
+    db = Database.Create()
+    db.init_database()
+    db.close()
+    logger.info("数据库结构已初始化（如不存在则创建 positions / transactions / portfolio 等表）")
+except Exception as e:
+    logger.error("初始化数据库结构失败: %s", e, exc_info=True)
+
 
 # 注册蓝图
 app.register_blueprint(bp)

@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>牛股计算器</title>
+<link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://unpkg.com/element-plus"></script>
+<style>
+body { background-color: #f0f2f5; margin: 0; padding: 12px; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; height: 100vh; box-sizing: border-box; overflow: hidden; }
+#app { height: 100%; display: flex; flex-direction: column; }
+.app-container { flex: 1; display: flex; flex-direction: column; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); overflow: hidden; }
+.header-box { flex-shrink: 0; margin-bottom: 20px; border-bottom: 1px solid #ebeef5; padding-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+.header-box h2 { margin: 0; color: #409EFF; font-size: 22px; }
+.toolbar { flex-shrink: 0; margin-bottom: 15px; display: flex; gap: 12px; align-items: flex-start; }
+.red-text { color: #f56c6c; font-weight: bold; }
+.green-text { color: #67c23a; font-weight: bold; }
+.fib-val { font-family: 'Monaco', 'Consolas', monospace; font-size: 13px; font-weight: bold; color: #606266; }
+.price-now { font-weight: 800; font-size: 15px; color: #303133; }
+.market-tag { font-size: 10px; padding: 0 4px; border-radius: 3px; margin-right: 4px; }
+.tag-sh { background: #fee; color: #f56c6c; border: 1px solid #fcc; }
+.tag-sz { background: #eef5ff; color: #409eff; border: 1px solid #c6e2ff; }
+.tag-hk { background: #f0f9eb; color: #67c23a; border: 1px solid #c2e7b0; }
+.header-color-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+.warning-tag { padding: 2px 6px; border-radius: 4px; font-size: 11px; background: #f5222d; color: #fff; margin-left: 5px; animation: pulse 2s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+.advice-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; color: #fff; text-align: center; min-width: 70px; }
+		.advice-danger { background-color: #f5222d; }
+		.advice-gold { background-color: #faad14; color: #000; }
+		.advice-blue { background-color: #1890ff; }
+		.advice-light-blue { background-color: #69c0ff; }
+		.advice-dark-blue { background-color: #096dd9; }
+		.advice-cyan { background-color: #13c2c2; }
+		.advice-normal { background-color: #bfbfbf; }
+.position-danger { background: linear-gradient(to right, #ff7875, #ff7875) !important; border-color: #ff7875 !important; color: #ffffff !important; }
+.position-danger:hover { background: linear-gradient(to right, #ff9c9c, #ff9c9c) !important; border-color: #ff9c9c !important; color: #ffffff !important; }
+.position-warning { background: linear-gradient(to right, #faad14, #faad14) !important; border-color: #faad14 !important; color: #000000 !important; }
+.position-warning:hover { background: linear-gradient(to right, #ffc53d, #ffc53d) !important; border-color: #ffc53d !important; color: #000000 !important; }
+.position-info { background: linear-gradient(to right, #90caf9, #90caf9) !important; border-color: #90caf9 !important; color: #333333 !important; }
+.position-info:hover { background: linear-gradient(to right, #69c0ff, #69c0ff) !important; border-color: #69c0ff !important; color: #333333 !important; }
+.position-default { background: linear-gradient(to right, #ffffff, #ffffff) !important; border-color: #dcdfe6 !important; color: #333333 !important; }
+.position-default:hover { background: linear-gradient(to right, #ecf5ff, #ecf5ff) !important; border-color: #c6e2ff !important; color: #409EFF !important; }
+.hidden-input { display: none; }
+.el-table .warning-row td.el-table__cell { background-color: #fffaf3 !important; }
+.el-table .danger-row td.el-table__cell { background-color: #fff9e6 !important; }
+.th-bold { font-weight: bold; }
+.th-blue { font-weight: bold; color: #409EFF; }
+</style>
+</head>
+<body>
+
+<div id="app">
+<div class="app-container">
+<div class="header-box">
+<div>
+<div style="display: flex; align-items: center; gap: 10px;">
+<h2>牛股策略计算器</h2>
+<el-popover placement="bottom" :width="500" trigger="click">
+<template #reference>
+<el-button type="primary" size="small" round>💡 策略逻辑</el-button>
+</template>
+
+
+<div style="font-size: 13px; line-height: 1.6; max-height: 550px; overflow-y: auto; padding-right: 5px; color: #303133;">
+<p style="margin-top: 0; color: #606266;">
+<b>核心思想：</b>“分级防御”与“动态进攻”，将交易心理博弈量化，解决“盈利回吐”与“破位死扛”的痛点。
+</p>
+
+<el-divider style="margin: 12px 0;"></el-divider>
+
+<h4 style="margin: 0 0 8px 0; color: #409EFF; display: flex; align-items: center;">
+<span style="margin-right: 5px;">👀</span> 一、 观察模式(未输入成本价)
+</h4>
+<p style="margin: 0 0 8px 0; font-size: 12px; color: #909399;">基于斐波那契(Fibonacci)回撤寻找支撑与突破。</p>
+<ul style="padding-left: 18px; margin: 0 0 15px 0;">
+<li style="margin-bottom: 6px;"><el-tag size="small" type="danger" effect="dark">破位严禁</el-tag> 当前价 < 阶段底部。趋势破坏，绝对防守。</li>
+<li style="margin-bottom: 6px;"><el-tag size="small" color="#faad14" effect="dark" style="border:none;">黄金坑</el-tag> 回撤至 <b>0.786</b> 之上。极度缩量洗盘位，盈亏比极高。</li>
+<li style="margin-bottom: 6px;"><el-tag size="small" type="primary" effect="dark">强支撑</el-tag> 回撤至 <b>0.618</b> 之上。波段回调企稳位。</li>
+<li style="margin-bottom: 6px;"><el-tag size="small" color="#13c2c2" effect="dark" style="border:none;">常规买点</el-tag> 回撤至 <b>0.382</b> 之上。强势股浅回踩。</li>
+<li style="margin-bottom: 6px;"><el-tag size="small" type="danger" plain>突破跟进</el-tag> 当前价 > 阶段顶部。打开上方空间，右侧确认。</li>
+</ul>
+
+<h4 style="margin: 0 0 8px 0; color: #67C23A; display: flex; align-items: center;">
+				<span style="margin-right: 5px;">🛡️</span> 二、 持仓模式(已输入成本价)
+			</h4>
+			<p style="margin: 0 0 8px 0; font-size: 12px; color: #909399;">底线思维，阶梯止盈，绝不让盈利单变亏损单。</p>
+			<ul style="padding-left: 18px; margin: 0 0 15px 0;">
+				<li style="margin-bottom: 6px;"><b>🛑 硬性止损：</b>跌破成本的 <b>7%</b>，无条件离场，保命第一。</li>
+				<li style="margin-bottom: 6px;">
+					<b>🛡️ 中肉保护(保本底线)：</b>最高浮盈 <b>10%~20%</b> 时，允许回撤50%利润，但<span style="color:#f56c6c; font-weight:bold;">极限保底 3% 利润</span>。若触及底线提示“落袋/保本”。
+				</li>
+				<li style="margin-bottom: 6px;">
+					<b>🏆 大肉保护(动态止盈)：</b>最高浮盈 <b>>20%</b> 时，允许从最高点回撤 <b>30%</b> 利润。未破提示“奔跑中”，破位提示“动态止盈”。
+				</li>
+				<li style="margin-bottom: 6px;"><b>⏳ 正常震荡：</b>浮盈不足10%且未触及止损，提示“持有中”，给予正常波动空间。</li>
+			</ul>
+
+<h4 style="margin: 0 0 8px 0; color: #E6A23C; display: flex; align-items: center;">
+<span style="margin-right: 5px;">⚡</span> 三、 日内参考(T+0网格)
+</h4>
+<p style="margin: 0 0 8px 0; font-size: 12px; color: #909399;">基于分时均价(VWAP)测算约 ±1.15% 的常态波动。</p>
+<ul style="padding-left: 18px; margin: 0;">
+<li style="margin-bottom: 4px;"><b style="color:#f56c6c;">↑ 压力位：</b>日内超买，做T高抛参考点。</li>
+<li style="margin-bottom: 4px;"><b style="color:#67c23a;">↓ 支撑位：</b>日内超卖，做T低吸参考点。</li>
+</ul>
+</div>
+</el-popover>
+</div>
+</div>
+<div style="display: flex; justify-content: center; margin-bottom: 15px;">
+			<el-button @click="showSettingsDialog" :class="settingsButtonClass" :style="settingsButtonStyle">{{settingsButtonText}}</el-button>
+		</div>
+		<div>
+			<el-button-group>
+				<el-button type="primary" @click="refreshAllPrices" :loading="loading">刷新行情</el-button>
+				<el-button type="danger" @click="clearAll">清空列表</el-button>
+				<el-button type="warning" @click="triggerImport">导入</el-button>
+				<el-button type="success" @click="exportData">导出</el-button>
+				<input type="file" ref="fileInput" class="hidden-input" accept=".csv" @change="importData">
+			</el-button-group>
+
+		<!-- 设置对话框 -->
+		<el-dialog v-model="settingsDialogVisible" title="设置" width="500px">
+			<el-form :model="settings" label-width="100px">
+				<el-form-item label="剩余资金">
+					<el-input v-model.number="settings.remainingFund" :step="0.01" placeholder="请输入剩余资金量"></el-input>
+				</el-form-item>
+
+			</el-form>
+			<template #footer>
+				<span class="dialog-footer">
+					<el-button @click="settingsDialogVisible = false">取消</el-button>
+					<el-button type="primary" @click="saveSettings">保存设置</el-button>
+				</span>
+			</template>
+		</el-dialog>
+
+		<!-- 买入对话框 -->
+		<el-dialog v-model="buyDialogVisible" title="买入" width="400px">
+			<el-form :model="tradeForm" label-width="80px">
+				<el-form-item label="买入价格">
+					<el-input v-model.number="tradeForm.buyPrice" :step="0.001" placeholder="请输入买入价格"></el-input>
+				</el-form-item>
+				<el-form-item label="买入数量">
+					<el-input v-model.number="tradeForm.buyAmount" :step="0.01" placeholder="请输入买入数量"></el-input>
+				</el-form-item>
+			</el-form>
+			<template #footer>
+				<span class="dialog-footer">
+					<el-button @click="buyDialogVisible = false">取消</el-button>
+					<el-button type="primary" @click="handleBuy">买入</el-button>
+				</span>
+			</template>
+		</el-dialog>
+
+		<!-- 卖出对话框 -->
+		<el-dialog v-model="sellDialogVisible" title="卖出" width="400px">
+			<el-form :model="tradeForm" label-width="80px">
+				<el-form-item label="卖出价格">
+					<el-input v-model.number="tradeForm.sellPrice" :step="0.001" placeholder="请输入卖出价格"></el-input>
+				</el-form-item>
+				<el-form-item label="卖出数量">
+					<el-input v-model.number="tradeForm.sellAmount" :step="0.01" placeholder="请输入卖出数量"></el-input>
+				</el-form-item>
+			</el-form>
+			<template #footer>
+				<span class="dialog-footer">
+					<el-button @click="sellDialogVisible = false">取消</el-button>
+					<el-button type="warning" @click="handleSell">卖出</el-button>
+				</span>
+			</template>
+		</el-dialog>
+
+		<!-- 删除确认对话框 -->
+		<el-dialog v-model="deleteDialogVisible" title="确认删除" width="400px">
+			<p>确定要删除该标的吗？</p>
+			<p v-if="deleteRowIndex !== null && tableData[deleteRowIndex] && tableData[deleteRowIndex].holdings > 0" style="color: #f56c6c; margin-top: 10px;">
+				当前持仓量：{{tableData[deleteRowIndex].holdings}}，需先卖出
+			</p>
+			<template #footer>
+				<span class="dialog-footer">
+					<el-button @click="deleteDialogVisible = false">取消</el-button>
+					<el-button type="danger" @click="confirmDelete">确认删除</el-button>
+				</span>
+			</template>
+		</el-dialog>
+</div>
+</div>
+
+<div class="toolbar">
+<el-input v-model="inputCodes" type="textarea" :rows="2" placeholder="代码示例：300308,588170,9992" style="flex: 1;"></el-input>
+<el-button type="primary" @click="addNewCodes" :loading="loading" style="height: 52px; width: 120px;">查询并追加</el-button>
+</div>
+
+<el-table :data="tableData" border height="100%" :row-class-name="tableRowClassName" @sort-change="handleSortChange">
+<el-table-column label="名称/代码" min-width="140" fixed="left" :sortable="true" prop="name">
+			<template #default="scope">
+				<div style="font-weight: bold;">
+					<span :class="['market-tag', 'tag-' + getMarket(scope.row.fullCode)]">{{getMarket(scope.row.fullCode).toUpperCase()}}</span>
+					{{scope.row.name}}
+				</div>
+				<div style="font-size: 11px; color: #909399;">{{scope.row.fullCode}}</div>
+				<span v-if="scope.row.isBreakLow" class="warning-tag">破位</span>
+			</template>
+		</el-table-column>
+
+		<el-table-column label="最新价" width="200" :sortable="true" prop="now">
+			<template #header>
+				<span class="th-blue">最新价</span>
+			</template>
+			<template #default="scope">
+				<div>
+					<span class="price-now">{{scope.row.now}}</span>
+					<span v-if="scope.row.changePercent" :class="scope.row.changePercent >= 0 ? 'red-text' : 'green-text'">
+						({{scope.row.changePercent >= 0 ? '+' : ''}}{{scope.row.changePercent.toFixed(2)}}%)
+					</span>
+				</div>
+			</template>
+		</el-table-column>
+
+
+		<el-table-column label="分时均价" width="130">
+			<template #header>
+				<span class="th-blue">分时均价</span>
+			</template>
+			<template #default="scope">
+				<span class="fib-val">{{scope.row.avg}}</span>
+			</template>
+		</el-table-column>
+
+		<el-table-column label="日内压力/支撑" width="160">
+			<template #header>
+				<span class="th-blue">日内压力/支撑</span>
+			</template>
+			<template #default="scope">
+				<div class="red-text">↑ {{scope.row.topLine}}</div>
+				<div class="green-text">↓ {{scope.row.bottomLine}}</div>
+			</template>
+		</el-table-column>
+
+		<!-- 分隔线 -->
+		<el-table-column label="" width="10" align="center">
+			<template #default="scope">
+				<div style="width: 1px; height: 30px; background-color: #ebeef5; margin: 0 auto;"></div>
+			</template>
+		</el-table-column>
+
+		<el-table-column label="阶段顶部" width="130">
+			<template #header>
+				<span style="font-weight: bold;"><span class="header-color-dot" style="background:#cc96f8"></span>顶部</span>
+			</template>
+			<template #default="scope">
+				<el-input v-model="scope.row.high" size="small" style="width: 100%" @input="calculateRow(scope.row)"></el-input>
+			</template>
+		</el-table-column>
+
+		<el-table-column label="阶段底部" width="130">
+			<template #header>
+				<span style="font-weight: bold;"><span class="header-color-dot" style="background:#ff5252"></span>底部</span>
+			</template>
+			<template #default="scope">
+				<el-input v-model="scope.row.low" size="small" style="width: 100%" @input="calculateRow(scope.row)"></el-input>
+			</template>
+		</el-table-column>
+
+		<el-table-column label="常规买点(0.382)" width="100">
+			<template #header>
+				<span class="th-bold">常规买点 (0.382)</span>
+			</template>
+			<template #default="scope"><span class="fib-val">{{scope.row.f382}}</span></template>
+		</el-table-column>
+
+		<el-table-column label="强支撑 (0.618)" width="100">
+			<template #header>
+				<span class="th-bold">强支撑 (0.618)</span>
+			</template>
+			<template #default="scope"><span class="fib-val">{{scope.row.f618}}</span></template>
+		</el-table-column>
+
+		<el-table-column label="黄金坑 (0.786)" width="100">
+			<template #header>
+				<span class="th-bold">黄金坑 (0.786)</span>
+			</template>
+			<template #default="scope"><span class="fib-val">{{scope.row.f786}}</span></template>
+		</el-table-column>
+
+        <el-table-column label="短期最高" width="110">
+			<template #header>
+				<span class="th-bold">短期最高</span>
+			</template>
+			<template #default="scope">
+				<span class="fib-val">{{scope.row.stHigh}}</span>
+			</template>
+		</el-table-column>
+
+		<el-table-column label="成本价" width="110">
+			<template #header>
+				<span class="th-bold">成本价</span>
+			</template>
+			<template #default="scope">
+				<el-input v-model="scope.row.cost" :step="0.001" size="small" style="width: 100%" @input="handleCostChange(scope.row)"></el-input>
+			</template>
+		</el-table-column>
+
+		<el-table-column label="持有量" width="100">
+			<template #header>
+				<span class="th-bold">持有量</span>
+			</template>
+			<template #default="scope">
+				<el-input v-model.number="scope.row.holdings" :step="0.01" size="small" style="width: 100%" @input="handleHoldingsChange(scope.$index, scope.row)"></el-input>
+			</template>
+		</el-table-column>
+
+		<el-table-column label="仓位" width="100" :sortable="true" prop="position" v-if="showPositionColumn">
+			<template #header>
+				<span class="th-bold">仓位</span>
+			</template>
+			<template #default="scope">
+				<span class="fib-val">{{scope.row.position.toFixed(2)}}%</span>
+			</template>
+		</el-table-column>
+
+		<el-table-column label="操作建议" width="120" fixed="right" :sortable="{custom: true}" prop="signal" sort-orders="['ascending', 'descending', null]">
+			<template #header>
+				<span class="th-bold">操作建议</span>
+			</template>
+			<template #default="scope">
+				<span class="advice-badge" :class="scope.row.adviceClass">{{scope.row.signal}}</span>
+			</template>
+		</el-table-column>
+
+		<el-table-column label="操作" width="240" fixed="right">
+			<template #header>
+				<span class="th-bold">操作</span>
+			</template>
+			<template #default="scope">
+				<el-button type="success" size="small" @click="showBuyDialog(scope.$index)">买</el-button>
+				<el-button type="warning" size="small" @click="showSellDialog(scope.$index)">卖</el-button>
+				<el-button type="danger" size="small" @click="showDeleteDialog(scope.$index)">删</el-button>
+			</template>
+		</el-table-column>
+</el-table>
+</div>
+</div>
+
+<script>
+const { createApp, ref, onMounted, reactive, computed, onUnmounted, watch } = Vue;
+
+		createApp({
+		setup() {
+			const STORAGE_KEY = 'phi_batch_table_v5';
+			const SETTINGS_KEY = 'phi_batch_settings_v1';
+			const inputCodes = ref("");
+			const tableData = ref([]);
+			const loading = ref(false);
+			const fileInput = ref(null);
+			const settingsDialogVisible = ref(false);
+			const buyDialogVisible = ref(false);
+			const sellDialogVisible = ref(false);
+			const deleteDialogVisible = ref(false);
+			const tradeForm = reactive({
+				buyPrice: 0,
+				buyAmount: 0,
+				sellPrice: 0,
+				sellAmount: 0
+			});
+			const deleteRowIndex = ref(null);
+			const settings = reactive({
+			remainingFund: 100000
+		});
+			let baseTotalValue = 0;
+
+		// 计算总资金量（持仓市值 + 剩余资金）
+		const totalPortfolioValue = computed(() => {
+			const holdingsValue = tableData.value.reduce((sum, item) => sum + (parseFloat(item.now) || 0) * (parseFloat(item.holdings) || 0), 0);
+			return holdingsValue + settings.remainingFund;
+		});
+
+		// 计算总仓位（所有持仓的仓位占比之和）
+		const totalPosition = computed(() => {
+			if (totalPortfolioValue.value <= 0) return 0;
+			return tableData.value.reduce((sum, item) => {
+				const holdingsValue = (parseFloat(item.now) || 0) * (parseFloat(item.holdings) || 0);
+				return sum + (holdingsValue / totalPortfolioValue.value) * 100;
+			}, 0);
+		});
+
+		const settingsButtonText = computed(() => {
+			return `总仓位：${totalPosition.value.toFixed(2)}%`;
+		});
+
+		const settingsButtonClass = computed(() => {
+			if (totalPosition.value >= 90) return 'position-danger';
+			if (totalPosition.value >= 75) return 'position-warning';
+			if (totalPosition.value >= 50) return 'position-info';
+			return 'position-default';
+		});
+
+		const settingsButtonStyle = computed(() => {
+			if (totalPosition.value >= 90) {
+				return { backgroundColor: '#ff7875', borderColor: '#ff7875', color: '#ffffff' };
+			}
+			if (totalPosition.value >= 75) {
+				return { backgroundColor: '#faad14', borderColor: '#faad14', color: '#000000' };
+			}
+			if (totalPosition.value >= 50) {
+				return { backgroundColor: '#90caf9', borderColor: '#90caf9', color: '#333333' };
+			}
+			return { backgroundColor: '#ffffff', borderColor: '#dcdfe6', color: '#333333' };
+		});
+
+		// 控制仓位列的显示
+		const showPositionColumn = computed(() => {
+			return totalPortfolioValue.value > 0;
+		});
+
+		const tableRowClassName = ({ row }) => {
+			const now = parseFloat(row.now);
+			if (now <= parseFloat(row.f786)) return 'danger-row';
+			if (now <= parseFloat(row.f618)) return 'warning-row';
+			return '';
+		};
+
+		const getMarket = (fullCode) => {
+			if (fullCode.startsWith('sh')) return 'sh';
+			if (fullCode.startsWith('sz')) return 'sz';
+			if (fullCode.startsWith('hk')) return 'hk';
+			if (fullCode.startsWith('bj')) return 'bj';
+			return 'other';
+		};
+
+		const saveToLocal = () => {
+			localStorage.setItem(STORAGE_KEY, JSON.stringify(tableData.value));
+		};
+
+		const saveSettingsToLocal = () => {
+			localStorage.setItem(SETTINGS_KEY, JSON.stringify({ remainingFund: settings.remainingFund }));
+		};
+
+		const loadSettingsFromLocal = () => {
+			const cached = localStorage.getItem(SETTINGS_KEY);
+			if (cached) {
+				const parsed = JSON.parse(cached);
+				// 兼容旧版本的 totalFund 字段
+				if (parsed.totalFund !== undefined && parsed.remainingFund === undefined) {
+					parsed.remainingFund = parsed.totalFund;
+				}
+				// 确保 remainingFund 是数字类型
+				if (typeof parsed.remainingFund === 'string') {
+					parsed.remainingFund = parseFloat(parsed.remainingFund);
+				}
+				settings.remainingFund = parsed.remainingFund;
+			}
+		};
+
+		const showSettingsDialog = () => {
+			loadSettingsFromLocal();
+			settingsDialogVisible.value = true;
+		};
+
+		const saveSettings = () => {
+			saveSettingsToLocal();
+			settingsDialogVisible.value = false;
+			ElementPlus.ElMessage.success('设置保存成功');
+			baseTotalValue = totalPortfolioValue.value;
+			calculatePositions();
+		};
+
+		let refreshInterval = null;
+
+
+
+		onMounted(() => {
+			const cached = localStorage.getItem(STORAGE_KEY);
+			if (cached) {
+				tableData.value = JSON.parse(cached).map(item => {
+					const reactiveItem = reactive(item);
+					if (reactiveItem.position === undefined) {
+						reactiveItem.position = 0;
+					}
+					return reactiveItem;
+				});
+			}
+			loadSettingsFromLocal();
+			baseTotalValue = totalPortfolioValue.value;
+			refreshAllPrices();
+			sortByPosition();
+
+			// 交易时间每20秒自动刷新行情
+			refreshInterval = setInterval(() => {
+				const now = new Date();
+				const dayOfWeek = now.getDay();
+				if (dayOfWeek === 0 || dayOfWeek === 6) {
+					return;
+				}
+				const hour = now.getHours();
+				const minute = now.getMinutes();
+				const isTradingTime = 
+					(hour >= 9 && hour < 11 && minute >= 30) || 
+					(hour === 11 && minute < 30) || 
+					(hour >= 13 && hour < 15);
+				const isAfterTradingEnd = hour === 15 && minute < 2;
+				if (isTradingTime) {
+					refreshAllPrices();
+				} else if (isAfterTradingEnd) {
+					refreshAllPrices();
+				}
+			}, 20000);
+		});
+
+		onUnmounted(() => {
+			// 清除定时器
+			if (refreshInterval) {
+				clearInterval(refreshInterval);
+			}
+		});
+
+		const formatCode = (code) => {
+			code = code.trim().toLowerCase();
+			if (!code) return null;
+			if (/^(sh|sz|hk|bj)/.test(code)) return code;
+			if (/^\d+$/.test(code)) {
+				if (code.length <= 4 || (code.length === 5 && code.startsWith('0'))) return 'hk' + code.padStart(5, '0');
+				if (code.length === 6) {
+					if (/^(5[168]|6)/.test(code)) return 'sh' + code;
+					if (/^(1[568]|0|3)/.test(code)) return 'sz' + code;
+					if (/^(4|8)/.test(code)) return 'bj' + code;
+				}
+			}
+			return code;
+		};
+
+		const calculateRow = (row) => {
+			const now = parseFloat(row.now) || 0;
+			const cost = parseFloat(row.cost) || 0;
+			const stHigh = parseFloat(row.stHigh) || 0;
+			const low = parseFloat(row.low) || 0;
+			const high = parseFloat(row.high) || 0;
+			const avg = parseFloat(row.avg) || 0;
+
+			// 1. 计算黄金分割位
+			const diff = high - low;
+			row.f382 = (high - diff * 0.382).toFixed(3);
+			row.f618 = (high - diff * 0.618).toFixed(3);
+			row.f786 = (high - diff * 0.786).toFixed(3);
+
+			// 2. 计算日内均价支撑/压力(当前为固定波动率系数，后续可优化为动态)
+			const K = 0.98848;
+			if (avg > 0) {
+				row.topLine = (avg / K).toFixed(3);
+				row.bottomLine = (avg * K).toFixed(3);
+			}
+
+			row.isBreakLow = false;
+
+			// 3. 核心交易逻辑判定
+			if (cost > 0) {
+				// === 持仓状态：动态防御与进攻 ===
+				const profitRate = (now - cost) / cost;
+				const maxProfitRate = (stHigh - cost) / cost;
+
+				if (now < cost * 0.93) {
+					// 防御线：硬止损(跌破成本7%)
+					row.signal = '止损离场';
+					row.adviceClass = 'advice-danger';
+				} else if (maxProfitRate >= 0.20) {
+					// 大肉保护(最高浮盈 >= 20%)：从最高点回撤利润的30%即止盈
+					const profitLimit = stHigh - (stHigh - cost) * 0.3;
+					if (now <= profitLimit) {
+						row.signal = '动态止盈';
+						row.adviceClass = 'advice-gold';
+					} else {
+						row.signal = '利润奔跑';
+						row.adviceClass = 'advice-normal';
+					}
+				} else if (maxProfitRate >= 0.10) {
+					// 中肉保护(最高浮盈 10%~20%)：回撤50%利润离场，且极限保底3%利润
+					// 修复了之前的“利润真空区”漏洞
+					const profitLimit = Math.max(stHigh - (stHigh - cost) * 0.5, cost * 1.03);
+				if (now <= profitLimit) {
+					row.signal = '落袋/保本';
+					row.adviceClass = 'advice-gold';
+				} else {
+					row.signal = '利润奔跑';
+					row.adviceClass = 'advice-normal';
+				}
+			} else {
+				// 正常震荡：浮盈不到10%，且未触发-7%止损
+				row.signal = '利润奔跑';
+				row.adviceClass = 'advice-normal';
+			}
+		} else {
+			// === 观察状态：基于斐波那契的价值发现 ===
+			if (low > 0 && now < low) {
+				// 跌破阶段底部(最高优先级，规避破位风险)
+				row.isBreakLow = true;
+				row.signal = '破位严禁';
+				row.adviceClass = 'advice-danger';
+			} else if (low > 0 && now <= parseFloat(row.f786)) {
+				// 深幅回踩 (0.786)
+				row.signal = '狠狠加仓';
+				row.adviceClass = 'advice-gold';
+			} else if (low > 0 && now <= parseFloat(row.f618)) {
+				// 强势回踩 (0.618)
+				row.signal = '重点关注';
+				row.adviceClass = 'advice-dark-blue';
+			} else if (low > 0 && now <= parseFloat(row.f382)) {
+				// 补全：常规回踩 (0.382)
+				row.signal = '轻仓试水';
+				row.adviceClass = 'advice-light-blue';
+			} else if (high > 0 && now > high) {
+                // 右侧突破(创阶段新高)
+                row.signal = '突破跟进';
+                row.adviceClass = 'advice-danger';
+            } else {
+                // 股价在 0.382 之上，且未突破前高，属于高位震荡
+                row.signal = '观望';
+                row.adviceClass = 'advice-normal';
+            }
+        }
+        // 状态更新后保存至本地
+		saveToLocal();
+	};
+
+
+
+		const handleHoldingsChange = (index, row) => {
+			const oldHoldings = parseFloat(row.holdings) || 0;
+			const cost = parseFloat(row.cost) || 0;
+			const now = parseFloat(row.now) || 0;
+			const newHoldings = parseFloat(row.holdings.toFixed(2)) || 0;
+			
+			if (newHoldings <= 0 && oldHoldings > 0) {
+				const freedValue = (oldHoldings * now).toFixed(2);
+				settings.remainingFund = parseFloat(settings.remainingFund) + parseFloat(freedValue);
+				row.holdings = 0;
+				row.position = 0;
+			} else if (newHoldings > 0) {
+				const baseValue = baseTotalValue > 0 ? baseTotalValue : totalPortfolioValue.value;
+				if (baseValue > 0) {
+					row.position = ((newHoldings * now) / baseValue) * 100;
+				}
+			}
+			saveToLocal();
+			saveSettingsToLocal();
+		};
+
+		const calculatePosition = (row) => {
+			const baseValue = baseTotalValue > 0 ? baseTotalValue : totalPortfolioValue.value;
+			if (baseValue > 0 && row.holdings > 0 && row.now > 0) {
+				row.position = ((row.holdings * row.now) / baseValue) * 100;
+				row.position = parseFloat(row.position.toFixed(2));
+			} else {
+				row.position = 0;
+			}
+			saveToLocal();
+		};
+
+		const calculatePositions = () => {
+			tableData.value.forEach(row => {
+				calculatePosition(row);
+			});
+		};
+
+		const handleCostChange = (row) => {
+			if (row.cost) {
+				row.cost = parseFloat(row.cost.toFixed(3));
+			}
+		};
+
+		// 默认按仓位从大到小排序，如果总资金未设置或为 0，则按持仓市值排序
+		const sortByPosition = () => {
+			if (totalPortfolioValue.value <= 0) {
+				// 按持仓市值（成本价*持有量）从大到小排序
+				tableData.value.sort((a, b) => {
+					const marketValueA = (parseFloat(a.cost) || 0) * (parseFloat(a.holdings) || 0);
+					const marketValueB = (parseFloat(b.cost) || 0) * (parseFloat(b.holdings) || 0);
+					return marketValueB - marketValueA;
+				});
+			} else {
+				// 按仓位从大到小排序
+				tableData.value.sort((a, b) => {
+					return b.position - a.position;
+				});
+			}
+		};
+
+		// 操作建议优先级排序
+		const signalPriority = {
+			'破位严禁': 1,
+			'止损离场': 2,
+			'动态止盈': 3,
+			'落袋/保本': 4,
+			'狠狠加仓': 5,
+			'重点关注': 6,
+			'轻仓试水': 7,
+			'突破跟进': 8,
+			'利润奔跑': 9,
+			'观望': 10
+		};
+
+		const handleSortChange = ({ prop, order }) => {
+			if (!prop) return;
+
+			tableData.value.sort((a, b) => {
+				if (prop === 'signal') {
+					// 自定义操作建议排序
+					const priorityA = signalPriority[a.signal] || 999;
+					const priorityB = signalPriority[b.signal] || 999;
+					if (order === 'ascending') {
+						return priorityA - priorityB;
+					} else if (order === 'descending') {
+						return priorityB - priorityA;
+					}
+				} else {
+					// 其他列的默认排序
+					let valueA = a[prop];
+					let valueB = b[prop];
+
+					if (typeof valueA === 'string' && typeof valueB === 'string') {
+						valueA = valueA.toLowerCase();
+						valueB = valueB.toLowerCase();
+					} else if (typeof valueA === 'string' && typeof valueB !== 'string') {
+						return 1;
+					} else if (typeof valueA !== 'string' && typeof valueB === 'string') {
+						return -1;
+					}
+
+					if (order === 'ascending') {
+						return valueA > valueB ? 1 : -1;
+					} else if (order === 'descending') {
+						return valueA < valueB ? 1 : -1;
+					}
+				}
+				return 0;
+			});
+		};
+
+// 数据源管理器
+		const DataSourceManager = {
+			sources: [
+				{
+					name: '腾讯财经',
+					fetch: (codes) => {
+						return new Promise((resolve, reject) => {
+							const queryStr = codes.join(',');
+							const oldScript = document.getElementById('jsonp-stock');
+							if (oldScript) oldScript.remove();
+							const script = document.createElement('script');
+							script.id = 'jsonp-stock';
+							script.src = `https://qt.gtimg.cn/q=${queryStr}`;
+							document.body.appendChild(script);
+
+							script.onload = () => {
+								const results = {};
+								codes.forEach(code => {
+									const dataStr = window[`v_${code}`];
+									if (dataStr) {
+										const d = dataStr.split('~');
+										const nowPrice = parseFloat(d[3]);
+										const prevClose = parseFloat(d[4]);
+										const dayHigh = parseFloat(d[33]);
+										const dayLow = parseFloat(d[34]);
+										let turnover = parseFloat(d[37]);
+										let volume = parseFloat(d[36]);
+										let newAvg = 0;
+
+										// 计算实时分时均价 (VWAP)
+										if (code.startsWith('hk')) {
+											newAvg = volume > 0 ? turnover / volume : parseFloat(d[4]);
+										} else {
+											newAvg = volume > 0 ? (turnover * 10000) / (volume * 100) : parseFloat(d[4]);
+										}
+
+										// 计算涨跌幅
+										let changePercent = 0;
+										if (prevClose > 0) {
+											changePercent = ((nowPrice - prevClose) / prevClose) * 100;
+										}
+
+										results[code] = {
+											name: d[1],
+											now: nowPrice,
+											high: dayHigh || nowPrice,
+											low: dayLow || nowPrice,
+											avg: parseFloat(newAvg.toFixed(3)),
+											changePercent: changePercent
+										};
+									}
+								});
+								resolve(results);
+							};
+
+							script.onerror = () => {
+								reject(new Error('腾讯财经数据源失败'));
+							};
+						});
+					}
+				},
+				{
+					name: '东方财富',
+					fetch: (codes) => {
+						return new Promise((resolve, reject) => {
+							// 东方财富接口实现
+							// 注意：实际使用时需要根据东方财富的API格式进行调整
+							setTimeout(() => {
+								reject(new Error('东方财富数据源暂未实现'));
+							}, 1000);
+						});
+					}
+				},
+				{
+					name: '新浪财经',
+					fetch: (codes) => {
+						return new Promise((resolve, reject) => {
+							// 新浪财经接口实现
+							setTimeout(() => {
+								reject(new Error('新浪财经数据源暂未实现'));
+							}, 1000);
+						});
+					}
+				}
+			],
+
+			async fetchData(codes) {
+				for (let i = 0; i < this.sources.length; i++) {
+					const source = this.sources[i];
+					try {
+						console.log(`尝试从 ${source.name} 获取数据`);
+						const results = await source.fetch(codes);
+						console.log(`从 ${source.name} 获取数据成功`);
+						return results;
+					} catch (error) {
+						console.warn(`${source.name} 数据源失败:`, error.message);
+						// 如果不是最后一个数据源，继续尝试下一个
+						if (i < this.sources.length - 1) {
+							console.log(`切换到下一个数据源`);
+							continue;
+						}
+						// 所有数据源都失败了
+						throw new Error('所有数据源都失败了');
+					}
+				}
+			}
+		};
+
+		const fetchData = async (codes, isAddition = true) => {
+			if (codes.length === 0) return;
+			loading.value = true;
+
+			try {
+				const results = await DataSourceManager.fetchData(codes);
+
+				codes.forEach(code => {
+					const data = results[code];
+					if (data) {
+						const existingIndex = tableData.value.findIndex(item => item.fullCode === code);
+						if (existingIndex > -1) {
+							const item = tableData.value[existingIndex];
+							item.now = data.now;
+							item.changePercent = data.changePercent || 0;
+							if (data.now > (item.stHigh || 0)) item.stHigh = data.now;
+							item.avg = data.avg;
+							calculateRow(item);
+							calculatePosition(item);
+						} else if (isAddition) {
+							const newItem = reactive({
+								name: data.name, fullCode: code, now: data.now, cost: 0, stHigh: data.now,
+								high: data.high, low: data.low,
+								avg: data.avg, signal: '', f382: 0, f618: 0, f786: 0, topLine: 0, bottomLine: 0,
+								holdings: 0, position: 0, changePercent: data.changePercent || 0
+							});
+							calculateRow(newItem);
+							tableData.value.unshift(newItem);
+						}
+					}
+				});
+			} catch (error) {
+				console.error('获取数据失败:', error);
+				ElementPlus.ElMessage.error('获取数据失败，请稍后重试');
+			} finally {
+				loading.value = false;
+				saveToLocal();
+				sortByPosition();
+				if (isAddition) inputCodes.value = "";
+			}
+		};
+
+const addNewCodes = async () => {
+			const codes = inputCodes.value.split(/[,\n]/).map(c => formatCode(c)).filter(c => c);
+			if(codes.length > 0) await fetchData(codes, true);
+		};
+
+		const refreshAllPrices = async () => {
+			const currentCodes = tableData.value.map(item => item.fullCode);
+			if (currentCodes.length > 0) await fetchData(currentCodes, false);
+		};
+
+		const removeItem = (index) => {
+			tableData.value.splice(index, 1);
+			saveToLocal();
+		};
+
+		const showBuyDialog = (index) => {
+			deleteRowIndex.value = index;
+			buyDialogVisible.value = true;
+		};
+
+		const showSellDialog = (index) => {
+			deleteRowIndex.value = index;
+			sellDialogVisible.value = true;
+		};
+
+		const showDeleteDialog = (index) => {
+			deleteRowIndex.value = index;
+			if (tableData.value[index].holdings > 0) {
+				ElementPlus.ElMessage.warning('当前有持仓，需先卖出');
+				return;
+			}
+			deleteDialogVisible.value = true;
+		};
+
+		const handleBuy = () => {
+			const index = deleteRowIndex.value;
+			if (index === null || index < 0 || index >= tableData.value.length) return;
+			
+			const row = tableData.value[index];
+			const buyPrice = parseFloat(tradeForm.buyPrice.toFixed(3)) || 0;
+			const buyAmount = parseFloat(tradeForm.buyAmount.toFixed(2)) || 0;
+			
+			if (buyPrice <= 0 || buyAmount <= 0) {
+				ElementPlus.ElMessage.warning('请输入正确的买入价格和数量');
+				return;
+			}
+			
+			const costAmount = (buyPrice * buyAmount).toFixed(2);
+			if (parseFloat(costAmount) > settings.remainingFund) {
+				ElementPlus.ElMessage.warning('剩余资金不足');
+				return;
+			}
+			
+			const oldHoldings = parseFloat(row.holdings) || 0;
+			const oldCost = parseFloat(row.cost) || 0;
+			
+			const newHoldings = oldHoldings + buyAmount;
+			const newCost = ((oldHoldings * oldCost + buyAmount * buyPrice) / newHoldings).toFixed(3);
+			
+			row.holdings = parseFloat(newHoldings.toFixed(2));
+			row.cost = parseFloat(newCost);
+			settings.remainingFund = parseFloat(settings.remainingFund) - parseFloat(costAmount);
+			
+			calculateRow(row);
+			calculatePosition(row);
+			saveToLocal();
+			saveSettingsToLocal();
+			
+			buyDialogVisible.value = false;
+			tradeForm.buyPrice = 0;
+			tradeForm.buyAmount = 0;
+			ElementPlus.ElMessage.success('买入成功');
+		};
+
+		const handleSell = () => {
+			const index = deleteRowIndex.value;
+			if (index === null || index < 0 || index >= tableData.value.length) return;
+			
+			const row = tableData.value[index];
+			const sellPrice = parseFloat(tradeForm.sellPrice.toFixed(3)) || 0;
+			const sellAmount = parseFloat(tradeForm.sellAmount.toFixed(2)) || 0;
+			
+			if (sellPrice <= 0 || sellAmount <= 0) {
+				ElementPlus.ElMessage.warning('请输入正确的卖出价格和数量');
+				return;
+			}
+			
+			if (sellAmount > row.holdings) {
+				ElementPlus.ElMessage.warning('持仓量不足');
+				return;
+			}
+			
+			const gainAmount = (sellPrice * sellAmount).toFixed(2);
+			const oldHoldings = parseFloat(row.holdings) || 0;
+			
+			row.holdings = parseFloat((oldHoldings - sellAmount).toFixed(2));
+			settings.remainingFund = parseFloat(settings.remainingFund) + parseFloat(gainAmount);
+			
+			if (row.holdings <= 0) {
+				row.holdings = 0;
+				row.position = 0;
+			} else {
+				calculatePosition(row);
+			}
+			calculateRow(row);
+			saveToLocal();
+			saveSettingsToLocal();
+			
+			sellDialogVisible.value = false;
+			tradeForm.sellPrice = 0;
+			tradeForm.sellAmount = 0;
+			ElementPlus.ElMessage.success('卖出成功');
+		};
+
+		const confirmDelete = () => {
+			const index = deleteRowIndex.value;
+			if (index === null || index < 0 || index >= tableData.value.length) return;
+			
+			const row = tableData.value[index];
+			if (row.holdings > 0) {
+				const sellPrice = parseFloat(row.cost.toFixed(3)) || 0;
+				const sellAmount = parseFloat(row.holdings.toFixed(2)) || 0;
+				const gainAmount = (sellPrice * sellAmount).toFixed(2);
+				
+				settings.remainingFund = parseFloat(settings.remainingFund) + parseFloat(gainAmount);
+				row.holdings = 0;
+				row.position = 0;
+				calculateRow(row);
+			}
+			
+			tableData.value.splice(index, 1);
+			saveToLocal();
+			saveSettingsToLocal();
+			
+			deleteDialogVisible.value = false;
+			deleteRowIndex.value = null;
+			ElementPlus.ElMessage.success('删除成功');
+		};
+
+		const clearAll = () => {
+			ElementPlus.ElMessageBox.confirm('确定清空数据吗？').then(() => {
+				tableData.value = [];
+				saveToLocal();
+			});
+		};
+
+		const triggerImport = () => fileInput.value.click();
+
+		const exportData = () => {
+			let csv = '\uFEFF代码,名称,最新价,阶段顶部,阶段底部,均价,成本价,短期最高\n';
+			tableData.value.forEach(row => {
+				// 只导出纯数字的最新价，不包含涨跌幅
+				csv += `${row.fullCode},${row.name},${row.now},${row.high},${row.low},${row.avg},${row.cost},${row.stHigh}\n`;
+			});
+			const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+			const link = document.createElement("a");
+			link.href = URL.createObjectURL(blob);
+			link.download = "策略备份.csv";
+			link.click();
+		};
+
+		const importData = (event) => {
+			const file = event.target.files[0];
+			if (!file) return;
+			const reader = new FileReader();
+			reader.onload = async (e) => {
+				const lines = e.target.result.split('\n').filter(l => l.trim());
+				if (lines.length <= 1) return;
+				lines.slice(1).forEach(line => {
+					const cols = line.split(',');
+					if (cols.length >= 2) {
+						const code = formatCode(cols[0]);
+						if (!code) return;
+						const itemData = {
+							fullCode: code, name: cols[1], now: cols[2],
+							high: cols[3], low: cols[4], avg: cols[5],
+							cost: cols[6], stHigh: cols[7]
+						};
+						const idx = tableData.value.findIndex(t => t.fullCode === code);
+						if (idx > -1) {
+							Object.assign(tableData.value[idx], itemData);
+							calculateRow(tableData.value[idx]);
+						} else {
+							const newItem = reactive({
+								...itemData, signal: '', f382: 0, f618: 0, f786: 0, topLine: 0, bottomLine: 0,
+								holdings: 0, position: 0, changePercent: 0
+							});
+							calculateRow(newItem);
+							tableData.value.unshift(newItem);
+						}
+					}
+				});
+				ElementPlus.ElMessage.success('导入成功');
+				await refreshAllPrices();
+				event.target.value = '';
+			};
+			reader.readAsText(file);
+		};
+
+		return {
+			inputCodes, tableData, loading, fileInput, settingsDialogVisible, settings,
+			addNewCodes, refreshAllPrices, calculateRow, removeItem, clearAll,
+			tableRowClassName, getMarket, triggerImport, exportData, importData,
+			showSettingsDialog, saveSettings, calculatePosition, handleSortChange,
+			settingsButtonText, settingsButtonStyle, showPositionColumn, handleHoldingsChange, handleCostChange,
+			buyDialogVisible, sellDialogVisible, deleteDialogVisible, tradeForm, deleteRowIndex,
+			showBuyDialog, showSellDialog, showDeleteDialog, handleBuy, handleSell, confirmDelete
+		};
+}
+}).use(ElementPlus).mount('#app');
+</script>
+</body>
+</html>

@@ -1,0 +1,790 @@
+{% extends "index.html" %}
+
+{% block content %}
+<div class="positions-excel-page">
+  <style>
+    .text-purple { color: #6f42c1; } /* Bootstrap 紫色系 */
+    .text-yellow { color: #ffc107; } /* 接近 Bootstrap warning 黄 */
+
+    /* Excel-like 样式（伪装用） */
+    /* 进入持仓页隐藏顶部导航栏 + 标题 */
+    nav.navbar { display: none !important; }
+    .positions-page-title { display: none !important; }
+    .positions-excel-page {
+      width: 100%;
+      padding: 8px 12px;
+    }
+
+    .excel-wrap {
+      background: #ffffff;
+      border: 1px solid #cfd6df;
+      box-shadow: 0 1px 0 rgba(0,0,0,0.03);
+      padding: 8px;
+    }
+    table.excel-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: Calibri, "Segoe UI", Arial, sans-serif;
+      font-size: 13px;
+      color: #111;
+    }
+    table.excel-table th,
+    table.excel-table td {
+      border: 1px solid #d9d9d9; /* 网格线 */
+      padding: 4px 6px;
+      white-space: nowrap;
+      vertical-align: middle;
+      background: #fff;
+    }
+    .excel-multiline {
+      white-space: normal !important;
+      line-height: 1.15;
+    }
+    .excel-subtext {
+      color: #666;
+      font-size: 12px;
+    }
+    table.excel-table thead th {
+      background: #f3f3f3;      /* Excel 表头浅灰 */
+      font-weight: 600;
+      text-align: left;
+    }
+    table.excel-table thead th.excel-colhdr,
+    table.excel-table thead th.excel-corner,
+    table.excel-table tbody td.excel-rowhdr {
+      background: #f3f3f3;
+      font-weight: 600;
+      color: #333;
+      text-align: center;
+      user-select: none;
+    }
+    table.excel-table thead th.excel-corner {
+      width: 34px;
+      min-width: 34px;
+    }
+    table.excel-table tbody td.excel-rowhdr {
+      width: 34px;
+      min-width: 34px;
+    }
+    table.excel-table td.text-end,
+    table.excel-table th.text-end {
+      text-align: right !important;
+    }
+    table.excel-table tbody tr:hover td {
+      background: #eef6ff; /* 悬浮行高亮 */
+    }
+    /* 让“链接按钮”更像单元格内的蓝色文本 */
+    .excel-link-btn {
+      border: none;
+      background: transparent;
+      padding: 0;
+      margin: 0;
+      color: #0563c1;
+      text-decoration: underline;
+      font: inherit;
+      cursor: pointer;
+    }
+    .excel-link-btn:hover { color: #0b4a8b; }
+  </style>
+  <div class="d-flex justify-content-between align-items-center">
+    <h2 class="mb-0 positions-page-title">持仓列表</h2>
+    <div>
+      <button type="button" class="btn btn-sm btn-outline-secondary me-2" id="maskToggleBtn" title="显示/隐藏金额">
+        <i class="fas fa-eye" id="maskToggleIcon"></i>
+      </button>
+      <a href="/" class="btn btn-sm btn-outline-secondary me-2" title="回到主页">
+        <i class="fas fa-home"></i>
+      </a>
+      <button type="button" class="btn btn-sm btn-primary" id="openTradeModalBtn" title="添加操作" aria-label="添加操作">
+        <i class="fas fa-plus"></i>
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary ms-2" id="openTransactionsModalBtn" title="历史交易" aria-label="历史交易">
+        <i class="fas fa-clock"></i>
+      </button>
+    </div>
+  </div>
+  <div class="excel-wrap mt-3">
+  <table class="excel-table" id="positions-table">
+    <thead>
+      <tr>
+        <th class="excel-corner"></th>
+        <th class="excel-colhdr">A</th>
+        <th class="excel-colhdr">B</th>
+        <th class="excel-colhdr">C</th>
+        <th class="excel-colhdr">D</th>
+        <th class="excel-colhdr">E</th>
+        <th class="excel-colhdr">F</th>
+        <th class="excel-colhdr">G</th>
+      </tr>
+      <tr>
+        <th class="excel-corner"></th>
+        <th>股票</th>
+        <th class="text-end">当日价格/当日涨跌百分比</th>
+        <th class="text-end">持仓天数</th>
+        <th class="text-end">持仓数量</th>
+        <th class="text-end">成本价/当前价</th>
+        <th class="text-end">浮盈/浮亏(元/% )</th>
+        <th class="text-end">总市值</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if positions %}
+        {% for p in positions %}
+        <tr class="position-row"
+            data-stock-code="{{ p.stock_code }}"
+            data-cost-price="{{ p.cost_price or 0 }}"
+            data-quantity="{{ p.quantity or 0 }}">
+          <td class="excel-rowhdr">{{ loop.index }}</td>
+          {% set cp = (p.cost_price or 0) %}
+          {% set cur = p.current_price %}
+          {% set qty = (p.quantity or 0) %}
+          {% if cur is not none %}
+            {% set pnl = (cur - cp) * qty %}
+          {% else %}
+            {% set pnl = none %}
+          {% endif %}
+          <td class="excel-multiline">
+            <div>{{ p.stock_name or '' }}</div>
+            <div class="excel-subtext">
+              <button type="button" class="excel-link-btn position-history-btn" data-stock-code="{{ p.stock_code }}">
+                {{ p.stock_code }}
+              </button>
+            </div>
+          </td>
+          <td class="text-end current-price-cell" data-stock-code="{{ p.stock_code }}">
+            {% if cur is not none %}
+              <span class="day-price">{{ '%.2f'|format(cur) }}</span>/<span class="day-pct">-</span>
+            {% else %}
+              -
+            {% endif %}
+          </td>
+          <td class="text-end">
+            {% if p.holding_days is not none %}
+              {{ p.holding_days }}
+            {% else %}
+              -
+            {% endif %}
+          </td>
+          <td class="text-end qty-cell" data-real="{{ '%.2f'|format(p.quantity or 0) }}">{{ '%.2f'|format(p.quantity or 0) }}</td>
+          <td class="text-end cost-cur-cell" data-stock-code="{{ p.stock_code }}">
+            <span>{{ '%.2f'|format(cp) }}/</span><span class="cur-part">{% if cur is not none %}{{ '%.2f'|format(cur) }}{% else %}-{% endif %}</span>
+          </td>
+          <td class="text-end pnl-cell" data-stock-code="{{ p.stock_code }}">
+            {% if pnl is not none %}
+              {% if cp and cp > 0 and cur is not none %}
+                {% set pnl_pct = ((cur - cp) / cp) * 100 %}
+              {% else %}
+                {% set pnl_pct = none %}
+              {% endif %}
+              <span class="pnl-amt" data-real="{{ '%.2f'|format(pnl) }}">{{ '%.2f'|format(pnl) }}</span>
+              <span>/</span>
+              <span class="pnl-pct {% if pnl > 0 %}text-purple{% elif pnl < 0 %}text-yellow{% endif %}">
+                {{ pnl_pct is not none and ('%.2f'|format(pnl_pct) ~ '%') or '-' }}
+              </span>
+            {% else %}
+              <span class="pnl-amt" data-real="-">-</span><span>/</span><span class="pnl-pct">-</span>
+            {% endif %}
+          </td>
+          <td class="text-end total-value-cell" data-stock-code="{{ p.stock_code }}" data-real="{% if p.total_value is not none %}{{ '%.2f'|format(p.total_value) }}{% else %}-{% endif %}">
+            {% if p.total_value is not none %}{{ '%.2f'|format(p.total_value) }}{% else %}-{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      {% else %}
+        <tr>
+          <td class="excel-rowhdr">1</td>
+          <td colspan="7" class="text-center text-muted">暂无持仓数据</td>
+        </tr>
+      {% endif %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<!-- 录入持仓操作（悬浮框） -->
+<div class="modal fade" id="tradeModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">录入持仓操作</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-danger d-none" id="tradeModalError"></div>
+        <form id="tradeModalForm">
+          <div class="row g-2">
+            <div class="col-md-3">
+              <label class="form-label">股票代码</label>
+              <input type="text" class="form-control" id="tm_stock_code" required>
+              <div class="form-text text-muted">支持 600000 / 600000.SH / 000001.SZ</div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">股票名称</label>
+              <input type="text" class="form-control" id="tm_stock_name" readonly>
+              <div class="form-text text-muted">自动从 stock_basic 回填</div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label d-block">操作类型</label>
+              <div class="btn-group" role="group">
+                <input type="radio" class="btn-check" name="tm_action" id="tm_action_buy" value="buy" checked>
+                <label class="btn btn-outline-success" for="tm_action_buy">买入</label>
+                <input type="radio" class="btn-check" name="tm_action" id="tm_action_sell" value="sell">
+                <label class="btn btn-outline-danger" for="tm_action_sell">卖出</label>
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">成交日期</label>
+              <input type="date" class="form-control" id="tm_trade_date">
+            </div>
+          </div>
+
+          <div class="row g-2 mt-2">
+            <div class="col-md-3">
+              <label class="form-label">价格</label>
+              <input type="number" step="0.01" class="form-control" id="tm_price" required>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">数量</label>
+              <input type="number" step="1" class="form-control" id="tm_quantity" required>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">手续费</label>
+              <input type="number" step="0.01" class="form-control" id="tm_fee" value="0">
+            </div>
+            <div class="col-md-3 d-flex align-items-end">
+              <div class="w-100 text-end">
+                <button type="submit" class="btn btn-primary" id="tm_submit_btn">提交</button>
+                <button type="button" class="btn btn-outline-secondary ms-2" data-bs-dismiss="modal">取消</button>
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 历史交易列表（悬浮框，嵌入页面） -->
+<div class="modal fade" id="transactionsModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">历史交易</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body p-0">
+        <iframe
+          id="transactionsFrame"
+          src="{{ url_for('main.positions_transactions_page') }}?embed=1"
+          style="width:100%; height:80vh; border:0;"
+          title="历史交易列表"
+        ></iframe>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 历史交易记录模态框 -->
+<div class="modal fade" id="historyModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">历史交易记录</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <div class="table-responsive">
+          <table class="table table-bordered table-sm mb-0">
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>操作</th>
+                <th class="text-end">价格</th>
+                <th class="text-end">数量</th>
+                <th class="text-end">手续费</th>
+                <th class="text-end">成交金额</th>
+              </tr>
+            </thead>
+            <tbody id="history-tbody">
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% block scripts %}
+{{ super() }}
+<script>
+  (function() {
+    const MASK_KEY = 'positions_mask_numbers';
+    let isMasked = false;
+
+    function readMaskSetting() {
+      try {
+        return localStorage.getItem(MASK_KEY) === '1';
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function saveMaskSetting(v) {
+      try {
+        localStorage.setItem(MASK_KEY, v ? '1' : '0');
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    function applyMaskToCell(cell) {
+      if (!cell) return;
+      const real = cell.getAttribute('data-real');
+      if (real == null) return;
+      if (isMasked) {
+        cell.textContent = '*****';
+      } else {
+        cell.textContent = real;
+      }
+    }
+
+    function applyMaskAll() {
+      // 只遮罩：数量、浮盈浮亏“金额”、总市值；不遮罩浮盈浮亏百分比与成本/当前价
+      document.querySelectorAll('.qty-cell, .total-value-cell').forEach(applyMaskToCell);
+      document.querySelectorAll('.pnl-amt').forEach(applyMaskToCell);
+      const icon = document.getElementById('maskToggleIcon');
+      if (icon) {
+        icon.classList.remove('fa-eye', 'fa-eye-slash');
+        icon.classList.add(isMasked ? 'fa-eye-slash' : 'fa-eye');
+      }
+    }
+
+    function normalizeForTencent(code) {
+      // 后端 tencent 模块支持 600000.SS/SH/SZ 等，这里保持原样即可
+      return (code || '').trim();
+    }
+
+    function inTradingHours() {
+      const now = new Date();
+      const h = now.getHours();
+      return h >= 9 && h <= 15;
+    }
+
+    function setText(el, text) {
+      if (!el) return;
+      el.textContent = text;
+    }
+
+    function setRealAndMaybeMask(el, realText) {
+      if (!el) return;
+      el.setAttribute('data-real', realText);
+      if (isMasked) {
+        el.textContent = '*****';
+      } else {
+        el.textContent = realText;
+      }
+    }
+
+    function setColorByPnl(el, pnl) {
+      if (!el) return;
+      el.classList.remove('text-purple', 'text-yellow');
+      if (pnl > 0) el.classList.add('text-purple');
+      else if (pnl < 0) el.classList.add('text-yellow');
+    }
+
+    function updateRowByPrice(tr, curPrice) {
+      if (!tr) return;
+      const cp = Number(tr.getAttribute('data-cost-price') || 0);
+      const qty = Number(tr.getAttribute('data-quantity') || 0);
+      const pnl = (curPrice != null) ? (curPrice - cp) * qty : null;
+
+      // 当前价列
+      const priceCell = tr.querySelector('.current-price-cell');
+      if (priceCell) {
+        // 当日涨跌百分比：依赖腾讯 prev_close（已在 refreshQuotesOnce 中传入）
+        const prev = Number(tr.getAttribute('data-prev-close') || 0);
+        let pct = null;
+        let pctTxt = '-';
+        if (curPrice != null && prev > 0) {
+          pct = ((curPrice - prev) / prev) * 100;
+          pctTxt = pct.toFixed(2) + '%';
+        }
+        const priceEl = priceCell.querySelector('.day-price');
+        const pctEl = priceCell.querySelector('.day-pct');
+        if (curPrice == null) {
+          setText(priceCell, '-');
+        } else {
+          if (priceEl) {
+            setText(priceEl, curPrice.toFixed(2));
+            priceEl.classList.remove('text-purple', 'text-yellow');
+          }
+          if (pctEl) {
+            setText(pctEl, pctTxt);
+            pctEl.classList.remove('text-purple', 'text-yellow');
+            if (pct != null) {
+              if (pct > 0) {
+                pctEl.classList.add('text-purple');
+                if (priceEl) priceEl.classList.add('text-purple');
+              } else if (pct < 0) {
+                pctEl.classList.add('text-yellow');
+                if (priceEl) priceEl.classList.add('text-yellow');
+              }
+            }
+          } else {
+            // 兜底：若 DOM 结构被替换，回写成纯文本
+            setText(priceCell, curPrice.toFixed(2) + '/' + pctTxt);
+          }
+        }
+      }
+
+      // 成本/当前价合并列 + 颜色（按成本与当前比较）
+      const costCurCell = tr.querySelector('.cost-cur-cell');
+      if (costCurCell) {
+        costCurCell.classList.remove('text-purple', 'text-yellow');
+        if (curPrice != null) {
+          costCurCell.innerHTML = '<span>' + cp.toFixed(2) + '/</span><span class="cur-part">' + curPrice.toFixed(2) + '</span>';
+          if (cp < curPrice) costCurCell.classList.add('text-purple');
+          else if (cp > curPrice) costCurCell.classList.add('text-yellow');
+        } else {
+          costCurCell.innerHTML = '<span>' + cp.toFixed(2) + '/</span><span class="cur-part">-</span>';
+        }
+      }
+
+      // 浮盈/浮亏
+      const pnlCell = tr.querySelector('.pnl-cell');
+      if (pnlCell) {
+        const amtEl = pnlCell.querySelector('.pnl-amt');
+        const pctEl = pnlCell.querySelector('.pnl-pct');
+        if (pnl == null) {
+          if (amtEl) setRealAndMaybeMask(amtEl, '-');
+          if (pctEl) {
+            setText(pctEl, '-');
+            pctEl.classList.remove('text-purple', 'text-yellow');
+          }
+          pnlCell.classList.remove('text-purple', 'text-yellow');
+        } else {
+          if (amtEl) setRealAndMaybeMask(amtEl, pnl.toFixed(2));
+          // 百分比：按 (当前-成本)/成本
+          if (pctEl) {
+            pctEl.classList.remove('text-purple', 'text-yellow');
+            if (cp > 0) {
+              const pp = ((curPrice - cp) / cp) * 100;
+              setText(pctEl, pp.toFixed(2) + '%');
+            } else {
+              setText(pctEl, '-');
+            }
+            if (pnl > 0) pctEl.classList.add('text-purple');
+            else if (pnl < 0) pctEl.classList.add('text-yellow');
+          }
+          setColorByPnl(pnlCell, pnl);
+        }
+      }
+
+      // 总市值（按盈亏上色）= 当前价 * 数量
+      const totalCell = tr.querySelector('.total-value-cell');
+      if (totalCell) {
+        if (curPrice == null) {
+          setRealAndMaybeMask(totalCell, '-');
+          totalCell.classList.remove('text-purple', 'text-yellow');
+        } else {
+          const mv = curPrice * qty;
+          setRealAndMaybeMask(totalCell, mv.toFixed(2));
+          setColorByPnl(totalCell, pnl || 0);
+        }
+      }
+    }
+
+    function refreshQuotesOnce() {
+      const rows = Array.from(document.querySelectorAll('tr.position-row'));
+      if (!rows.length) return;
+      const codes = Array.from(new Set(rows.map(r => r.getAttribute('data-stock-code')).filter(Boolean)));
+      const payload = { codes: codes.map(normalizeForTencent) };
+      fetch('/api/quotes/tencent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      .then(resp => resp.json())
+      .then(data => {
+        if (!data || !data.success) return;
+        const quotes = data.quotes || {};
+
+        // quotes 的 key 是腾讯 full_code（sh/sz/hk/bj），需要按输入 code 再匹配一次：
+        // 简化：对每一行，用后端的 format_code 规则会把 600000.* 转为 sh600000/sz000001 等，
+        // 这里直接尝试用多种 key 命中。
+        rows.forEach(tr => {
+          const raw = tr.getAttribute('data-stock-code') || '';
+          const base = raw.split('.', 1)[0]; // 600000.SS -> 600000
+          const candidates = [
+            raw.toLowerCase(),
+            base,
+            ('sh' + base),
+            ('sz' + base),
+            ('bj' + base),
+            ('hk' + String(base).padStart(5, '0')),
+          ];
+          let q = null;
+          for (const k of Object.keys(quotes)) {
+            // 直接匹配 full_code
+            if (candidates.includes(k)) { q = quotes[k]; break; }
+          }
+          if (!q) {
+            // 再用 value.code 去匹配
+            for (const v of Object.values(quotes)) {
+              if (v && v.code && candidates.includes(String(v.code).toLowerCase())) {
+                q = v; break;
+              }
+            }
+          }
+          if (q && typeof q.now === 'number') {
+            // 给 updateRowByPrice 用的 prev_close
+            if (typeof q.prev_close === 'number') {
+              tr.setAttribute('data-prev-close', String(q.prev_close));
+            }
+            updateRowByPrice(tr, q.now);
+          }
+        });
+      })
+      .catch(() => {});
+    }
+
+    // 初始化遮罩开关（从本地存储读取）
+    isMasked = readMaskSetting();
+    const btn = document.getElementById('maskToggleBtn');
+    if (btn) {
+      btn.addEventListener('click', function() {
+        isMasked = !isMasked;
+        saveMaskSetting(isMasked);
+        applyMaskAll();
+      });
+    }
+    applyMaskAll();
+
+    // ─────────────────────────── 录入操作悬浮框 ───────────────────────────
+    function todayISO() {
+      const d = new Date();
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    }
+
+    function showTradeError(msg) {
+      const el = document.getElementById('tradeModalError');
+      if (!el) return;
+      if (msg) {
+        el.textContent = msg;
+        el.classList.remove('d-none');
+      } else {
+        el.textContent = '';
+        el.classList.add('d-none');
+      }
+    }
+
+    function normalizeForBasic(code) {
+      const c = (code || '').trim();
+      if (!c) return '';
+      const idx = c.indexOf('.');
+      return idx >= 0 ? c.slice(0, idx) : c;
+    }
+
+    function fetchNameIntoModal(code) {
+      const basicCode = normalizeForBasic(code);
+      if (!basicCode) {
+        document.getElementById('tm_stock_name').value = '';
+        return;
+      }
+      fetch('/api/stock_basic/' + encodeURIComponent(basicCode))
+        .then(r => r.json())
+        .then(data => {
+          if (data && data.success && data.found && data.data && data.data.name) {
+            document.getElementById('tm_stock_name').value = data.data.name;
+          } else {
+            document.getElementById('tm_stock_name').value = '';
+          }
+        })
+        .catch(() => {
+          document.getElementById('tm_stock_name').value = '';
+        });
+    }
+
+    function openTradeModal(presetCode) {
+      showTradeError('');
+      document.getElementById('tm_stock_code').value = presetCode || '';
+      document.getElementById('tm_stock_name').value = '';
+      document.getElementById('tm_action_buy').checked = true;
+      document.getElementById('tm_trade_date').value = todayISO();
+      document.getElementById('tm_price').value = '';
+      document.getElementById('tm_quantity').value = '';
+      document.getElementById('tm_fee').value = '0';
+      if (presetCode) {
+        fetchNameIntoModal(presetCode);
+      }
+      const modalEl = document.getElementById('tradeModal');
+      const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+      modal.show();
+      setTimeout(() => document.getElementById('tm_stock_code').focus(), 50);
+    }
+
+    const openBtn = document.getElementById('openTradeModalBtn');
+    if (openBtn) {
+      openBtn.addEventListener('click', () => openTradeModal(''));
+    }
+
+    const openTxBtn = document.getElementById('openTransactionsModalBtn');
+    if (openTxBtn) {
+      openTxBtn.addEventListener('click', () => {
+        const modalEl = document.getElementById('transactionsModal');
+        const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.show();
+      });
+    }
+
+    // 点击股票代码（原本打开历史）时，按住 Alt 则直接弹出录入框并预填 code
+    document.addEventListener('click', function(e) {
+      const btn = e.target.closest('.position-history-btn');
+      if (btn && e.altKey) {
+        e.preventDefault();
+        const code = btn.getAttribute('data-stock-code') || '';
+        openTradeModal(code);
+      }
+    }, true);
+
+    const codeInput = document.getElementById('tm_stock_code');
+    if (codeInput) {
+      let t = null;
+      codeInput.addEventListener('input', function() {
+        const v = this.value || '';
+        if (t) clearTimeout(t);
+        t = setTimeout(() => fetchNameIntoModal(v), 250);
+      });
+      codeInput.addEventListener('blur', function() {
+        fetchNameIntoModal(this.value || '');
+      });
+    }
+
+    const form = document.getElementById('tradeModalForm');
+    if (form) {
+      form.addEventListener('submit', function(ev) {
+        ev.preventDefault();
+        showTradeError('');
+        const stock_code = (document.getElementById('tm_stock_code').value || '').trim();
+        const stock_name = (document.getElementById('tm_stock_name').value || '').trim();
+        const action = (document.querySelector('input[name="tm_action"]:checked') || {}).value;
+        const price = Number(document.getElementById('tm_price').value);
+        const quantity = Number(document.getElementById('tm_quantity').value);
+        const fee = Number(document.getElementById('tm_fee').value || 0);
+        const trade_date = (document.getElementById('tm_trade_date').value || '').trim();
+
+        if (!stock_code) return showTradeError('股票代码不能为空');
+        if (!action) return showTradeError('请选择操作类型');
+        if (!(price > 0)) return showTradeError('价格必须大于 0');
+        if (!(quantity > 0)) return showTradeError('数量必须大于 0');
+
+        const btn = document.getElementById('tm_submit_btn');
+        btn.disabled = true;
+        btn.textContent = '提交中...';
+
+        fetch('/api/positions/trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stock_code, stock_name, action, price, quantity, fee, trade_date }),
+        })
+        .then(r => r.json().then(j => ({ ok: r.ok, j })))
+        .then(({ ok, j }) => {
+          if (!ok || !j || !j.success) {
+            throw new Error((j && j.message) || '提交失败');
+          }
+          // 关闭弹窗并刷新页面数据（最简单可靠）
+          const modalEl = document.getElementById('tradeModal');
+          const modal = bootstrap.Modal.getInstance(modalEl);
+          if (modal) modal.hide();
+          // 刷新：重新加载页面以保证持仓/交易流水/价格刷新逻辑一致
+          window.location.reload();
+        })
+        .catch(err => {
+          showTradeError(err && err.message ? err.message : '提交失败');
+        })
+        .finally(() => {
+          btn.disabled = false;
+          btn.textContent = '提交';
+        });
+      });
+    }
+
+    // 进入页面先刷新一次
+    refreshQuotesOnce();
+    // 交易时段每 10 秒刷新，否则不再刷新
+    if (inTradingHours()) {
+      setInterval(refreshQuotesOnce, 10000);
+    }
+
+    function loadHistory(code) {
+      if (!code) return;
+      fetch('/api/positions/' + encodeURIComponent(code) + '/history')
+        .then(function(resp) { return resp.json(); })
+        .then(function(data) {
+          var tbody = document.getElementById('history-tbody');
+          tbody.innerHTML = '';
+          if (!data.success || !data.records || data.records.length === 0) {
+            var tr = document.createElement('tr');
+            var td = document.createElement('td');
+            td.colSpan = 6;
+            td.className = 'text-center text-muted';
+            td.textContent = '暂无历史交易记录';
+            tr.appendChild(td);
+            tbody.appendChild(tr);
+          } else {
+            data.records.forEach(function(r) {
+              var tr = document.createElement('tr');
+              function td(text, cls) {
+                var cell = document.createElement('td');
+                if (cls) cell.className = cls;
+                cell.textContent = text;
+                return cell;
+              }
+              tr.appendChild(td(r.trade_date || '', ''));
+              tr.appendChild(td(r.action === 'buy' ? '买入' : '卖出', ''));
+              tr.appendChild(td((r.price || 0).toFixed(2), 'text-end'));
+              tr.appendChild(td((r.quantity || 0).toFixed(2), 'text-end'));
+              tr.appendChild(td((r.fee || 0).toFixed(2), 'text-end'));
+              tr.appendChild(td((r.amount || 0).toFixed(2), 'text-end'));
+              tbody.appendChild(tr);
+            });
+          }
+          var modalEl = document.getElementById('historyModal');
+          var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+          modal.show();
+        })
+        .catch(function(err) {
+          console.error('加载历史记录失败', err);
+          var tbody = document.getElementById('history-tbody');
+          tbody.innerHTML = '';
+          var tr = document.createElement('tr');
+          var td = document.createElement('td');
+          td.colSpan = 6;
+          td.className = 'text-center text-danger';
+          td.textContent = '加载历史记录失败';
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+          var modalEl = document.getElementById('historyModal');
+          var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+          modal.show();
+        });
+    }
+
+    document.addEventListener('click', function(e) {
+      var btn = e.target.closest('.position-history-btn');
+      if (btn) {
+        var code = btn.getAttribute('data-stock-code');
+        loadHistory(code);
+      }
+    });
+  })();
+</script>
+{% endblock %}
+
+{% endblock %}
