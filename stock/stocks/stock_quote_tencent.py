@@ -6,6 +6,9 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import requests
 
+# 与 TestScripts/StockCalculateTools.html calculateRow 中压力位/支撑位一致
+INTRADAY_AVG_K: float = 0.98848
+
 
 @dataclass(frozen=True)
 class StockQuote:
@@ -20,6 +23,8 @@ class StockQuote:
     change_percent: float
     volume: float
     turnover: float
+    pressure_line: Optional[float] = None  # avg/K，avg>0 时有效
+    support_line: Optional[float] = None  # avg*K
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -95,6 +100,26 @@ def _safe_float(v: str) -> float:
         return 0.0
 
 
+def _intraday_avg(code: str, volume: float, turnover: float, prev_close: float) -> float:
+    """
+    当日实时均价，分支对齐 StockCalculateTools.html fetchData 中 newAvg。
+    """
+    if code.startswith("hk"):
+        raw = turnover / volume if volume > 0 else prev_close
+    elif code.startswith("sh68") or code.startswith("bj"):
+        raw = (turnover * 10000) / volume if volume > 0 else prev_close
+    else:
+        raw = (turnover * 10000) / (volume * 100) if volume > 0 else prev_close
+    return float(f"{raw:.3f}") if raw else 0.0
+
+
+def _pressure_support_lines(avg: float) -> Tuple[Optional[float], Optional[float]]:
+    if avg > 0:
+        k = INTRADAY_AVG_K
+        return float(f"{(avg / k):.3f}"), float(f"{(avg * k):.3f}")
+    return None, None
+
+
 def _parse_one(code: str, payload: str) -> Optional[StockQuote]:
     """
     payload 为 qt.gtimg.cn 返回的引号内字段串，使用 ~ 分隔。
@@ -119,11 +144,8 @@ def _parse_one(code: str, payload: str) -> Optional[StockQuote]:
     volume = _safe_float(d[36])
     turnover = _safe_float(d[37])
 
-    if code.startswith("hk"):
-        avg = turnover / volume if volume > 0 else prev_close
-    else:
-        avg = (turnover * 10000) / (volume * 100) if volume > 0 else prev_close
-    avg = float(f"{avg:.3f}") if avg else 0.0
+    avg = _intraday_avg(code, volume, turnover, prev_close)
+    pressure_line, support_line = _pressure_support_lines(avg)
 
     change = now - prev_close if prev_close > 0 else 0.0
     change_percent = (change / prev_close) * 100 if prev_close > 0 else 0.0
@@ -140,6 +162,8 @@ def _parse_one(code: str, payload: str) -> Optional[StockQuote]:
         change_percent=change_percent,
         volume=volume,
         turnover=turnover,
+        pressure_line=pressure_line,
+        support_line=support_line,
     )
 
 

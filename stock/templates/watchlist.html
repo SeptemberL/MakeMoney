@@ -120,12 +120,14 @@
           <th class="excel-colhdr">B</th>
           <th class="excel-colhdr">C</th>
           <th class="excel-colhdr">D</th>
+          <th class="excel-colhdr">E</th>
         </tr>
         <tr>
           <th class="excel-corner"></th>
           <th>股票名称</th>
           <th class="text-end">当日价格</th>
           <th class="text-end">涨跌幅</th>
+          <th class="text-end">分时均价</th>
           <th class="text-end">操作</th>
         </tr>
       </thead>
@@ -158,6 +160,10 @@
                   {% endif %}
                 </span>
               </td>
+              <td class="text-end excel-multiline wl-avg-cell">
+                <div><span class="wl-day-avg">-</span></div>
+                <div class="excel-subtext wl-avg-ps">压 - · 撑 -</div>
+              </td>
               <td class="text-end">
                 <button type="button" class="btn btn-sm btn-outline-primary edit-signal-btn"
                         data-stock-code="{{ w.stock_code or '' }}"
@@ -176,7 +182,7 @@
         {% else %}
           <tr>
             <td class="excel-rowhdr">1</td>
-            <td colspan="4" class="text-center text-muted">暂无自选数据</td>
+            <td colspan="5" class="text-center text-muted">暂无自选数据</td>
           </tr>
         {% endif %}
       </tbody>
@@ -399,6 +405,13 @@
 
             const priceEl = tr.querySelector('.day-price');
             const pctEl = tr.querySelector('.day-pct');
+            const avgEl = tr.querySelector('.wl-day-avg');
+            const psEl = tr.querySelector('.wl-avg-ps');
+
+            function setWlAvgDash() {
+              setText(avgEl, '-');
+              setText(psEl, '压 - · 撑 -');
+            }
 
             if (q && typeof q.now === 'number') {
               const now = q.now;
@@ -415,11 +428,29 @@
                 setColorByPct(pctEl, 0);
                 setColorByPct(priceEl, 0);
               }
+
+              if (typeof q.avg === 'number' && q.avg > 0) {
+                setText(avgEl, q.avg.toFixed(3));
+                if (q.pressure_line != null && q.support_line != null) {
+                  setText(
+                    psEl,
+                    '压 ' +
+                      Number(q.pressure_line).toFixed(3) +
+                      ' · 撑 ' +
+                      Number(q.support_line).toFixed(3),
+                  );
+                } else {
+                  setText(psEl, '压 - · 撑 -');
+                }
+              } else {
+                setWlAvgDash();
+              }
             } else {
               setText(priceEl, '-');
               setText(pctEl, '-');
               setColorByPct(pctEl, 0);
               setColorByPct(priceEl, 0);
+              setWlAvgDash();
             }
           });
         })
@@ -646,7 +677,7 @@
         tbody.innerHTML = `
           <tr>
             <td class="excel-rowhdr">1</td>
-            <td colspan="3" class="text-center text-muted">暂无自选数据</td>
+            <td colspan="5" class="text-center text-muted">暂无自选数据</td>
           </tr>
         `;
         return;
@@ -665,6 +696,10 @@
           </td>
           <td class="text-end current-price-cell"><span class="day-price">-</span></td>
           <td class="text-end"><span class="day-pct">-</span></td>
+          <td class="text-end excel-multiline wl-avg-cell">
+            <div><span class="wl-day-avg">-</span></div>
+            <div class="excel-subtext wl-avg-ps">压 - · 撑 -</div>
+          </td>
           <td class="text-end">
             <button type="button" class="btn btn-sm btn-outline-primary edit-signal-btn"
                     data-stock-code="${escapeHtml(it.stock_code || '')}"

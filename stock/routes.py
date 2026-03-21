@@ -1196,6 +1196,9 @@ def api_quotes_tencent():
                 'name': q.name,
                 'now': q.now,
                 'prev_close': q.prev_close,
+                'avg': q.avg,
+                'pressure_line': q.pressure_line,
+                'support_line': q.support_line,
             }
         return jsonify({'success': True, 'quotes': out})
     except Exception as e:
