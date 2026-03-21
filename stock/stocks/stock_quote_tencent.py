@@ -32,7 +32,8 @@ _LINE_RE = re.compile(r'^v_([^=]+)="([^"]*)";?$')
 def format_code(code: str) -> Optional[str]:
     """
     将用户输入转换为腾讯行情代码格式：
-    - A股：sh600000 / sz000001 / bj430047
+    - A股：sh600000 / sz000001
+    - 北交所：bj430047 / bj920809
     - 港股：hk09992（5位左补0）
 
     规则对齐 TestScripts/nmstock_nga.html 中的 formatCode。
@@ -43,12 +44,32 @@ def format_code(code: str) -> Optional[str]:
     if not code:
         return None
 
-    # 兼容类似 000001.SZ / 600000.SH
+    # 兼容类似 000001.SZ / 600000.SH / 600000.SS(别名) / 430047.BJ
     if "." in code:
         left, right = code.split(".", 1)
         right = right.strip().lower()
+        left = left.strip()
+
+        # 兼容常见误写：A股后缀 `.SS` -> 实际应为 `.SH`
+        if right == "ss":
+            right = "sh"
+
+        # 若 left 是 6 位数字，优先用数字前缀判定市场：
+        # - 4/8/9 开头：北交所 bj
+        # - 5[168]/6 开头：上交所 sh
+        # - 1[568]/0/3 开头：深交所 sz
+        # 这样即便后缀写错（如 `430047.SS`），也能落到正确市场。
+        if re.match(r"^\d{6}$", left):
+            if re.match(r"^(4|8|9)", left):
+                return "bj" + left
+            if re.match(r"^(5[168]|6)", left):
+                return "sh" + left
+            if re.match(r"^(1[568]|0|3)", left):
+                return "sz" + left
+
         if right in ("sz", "sh", "bj", "hk"):
-            code = f"{right}{left.strip()}"
+            code = f"{right}{left}"
+        # else: keep as-is
 
     if re.match(r"^(sh|sz|hk|bj)", code):
         return code
@@ -61,7 +82,7 @@ def format_code(code: str) -> Optional[str]:
                 return "sh" + code
             if re.match(r"^(1[568]|0|3)", code):
                 return "sz" + code
-            if re.match(r"^(4|8)", code):
+            if re.match(r"^(4|8|9)", code):
                 return "bj" + code
 
     return code

@@ -32,12 +32,22 @@ from signals.signal_boll3 import Signal_BOLL3
 from stocks.stock_global import stockGlobal
 from stocks.stock_filter import StockFilger
 from Managers.ScanManager import ScanManager
+from Managers.wx_group_manager import WXGroupManager
 from stock_gatter.stockgetter_btc import StockGetter_BTC
+from signals.signal_notify_system import (
+    create_signal_instance,
+    SendType,
+    SignalConfig,
+    SignalMessageTemplate,
+    SingleManager,
+    SingleType,
+)
 import csv
 import tempfile
 import sys
 import re
 from pathlib import Path
+from typing import List
 
 # 保证 TestScripts 可被导入（nga_format）
 _route_dir = Path(__file__).resolve().parent
@@ -72,6 +82,70 @@ logger = logging.getLogger(__name__)
 # 全局变量
 sendAllMessage = ""
 config = Config()
+
+
+def _send_signal_to_group(group_id: int, message: str):
+    """
+    信号系统发送适配器：
+    - 若微信实例可用，则按 group_id 找到 chat_list 后逐个发送
+    - 否则仅记录日志，避免阻断主流程
+    """
+    try:
+        wx = getattr(stockGlobal, 'wx', None)
+        if wx is None:
+            logger.info("信号发送(模拟) group_id=%s, message=%s", group_id, message)
+            return
+        chat_list = WXGroupManager().find_wx_group(group_id) or []
+        if not chat_list:
+            logger.warning("group_id=%s 未配置 chat_list，消息未发送", group_id)
+            return
+        for chat_name in chat_list:
+            wx.SendMsg(message, chat_name)
+    except Exception as e:
+        logger.error("发送信号消息失败: %s", e, exc_info=True)
+
+
+def _run_signal_notify_for_stock(stock_code: str, price: float) -> List[str]:
+    """按 stock_code + 最新价执行一次信号检查，并持久化触发状态。"""
+    db = Database.Create()
+    try:
+        rows = db.get_signal_rules(stock_code=stock_code, only_active=True)
+        rule_ids = [int(r.get('id')) for r in (rows or []) if r.get('id') is not None]
+        state_map = db.get_signal_rule_states(rule_ids)
+
+        messages = []
+        for r in rows or []:
+            try:
+                rule_id = int(r.get('id'))
+                runtime_state = json.loads(state_map.get(rule_id, '{}') or '{}')
+                signal = create_signal_instance(
+                    SignalConfig(
+                        stock_code=r.get('stock_code') or '',
+                        stock_name=r.get('stock_name') or '',
+                        group_ids=json.loads(r.get('group_ids_json') or '[]'),
+                        signal_type=SingleType(r.get('signal_type') or SingleType.PRICE_RANGE.value),
+                        params=json.loads(r.get('params_json') or '{}'),
+                        message_template=SignalMessageTemplate(
+                            template=r.get('message_template') or SignalMessageTemplate().template
+                        ),
+                        send_type=SendType(r.get('send_type') or SendType.ON_TRIGGER.value),
+                        send_interval_seconds=int(r.get('send_interval_seconds') or 0),
+                        runtime_state=runtime_state,
+                    )
+                )
+                new_messages = signal.update(price)
+                for msg in new_messages:
+                    signal.send_message(msg, _send_signal_to_group)
+                    messages.append(msg)
+                db.upsert_signal_rule_state(
+                    rule_id=rule_id,
+                    state_json=json.dumps(signal.get_runtime_state(), ensure_ascii=False),
+                )
+            except Exception as e:
+                logger.warning("执行 signal_rule(id=%s) 失败，已跳过: %s", r.get('id'), e)
+        return messages
+    finally:
+        db.close()
 
 _STOCK_TABLE_RE = re.compile(r'^stock_(\d{6})_(SH|SZ)$')
 
@@ -113,20 +187,374 @@ def quant():
     """量化功能专用页面"""
     return render_template('quant.html')
 
+
+@bp.route('/signal_notify')
+def signal_notify():
+    """股票信号通知配置页面（含悬浮配置层）"""
+    return render_template('signal_notify.html')
+
+
+@bp.route('/api/signal_notify/editor_schema', methods=['GET'])
+def signal_notify_editor_schema():
+    """1.1：给其他页面复用的悬浮编辑器接口定义"""
+    schema = SingleManager.get_floating_editor_schema()
+    return jsonify({'success': True, 'schema': schema})
+
+
+@bp.route('/api/signal_notify/signals', methods=['GET'])
+def signal_notify_list():
+    """查看当前已注册信号"""
+    db = Database.Create()
+    try:
+        stock_code = (request.args.get('stock_code') or '').strip()
+        only_active_raw = (request.args.get('only_active') or 'true').strip().lower()
+        only_active = only_active_raw not in ('0', 'false', 'no', 'off')
+        rows = db.get_signal_rules(stock_code=stock_code or None, only_active=only_active)
+        out = []
+        for r in rows or []:
+            out.append({
+                'id': r.get('id'),
+                'stock_code': r.get('stock_code'),
+                'stock_name': r.get('stock_name') or '',
+                'group_ids': json.loads(r.get('group_ids_json') or '[]'),
+                'signal_type': r.get('signal_type'),
+                'params': json.loads(r.get('params_json') or '{}'),
+                'message_template': r.get('message_template') or '',
+                'send_type': r.get('send_type') or SendType.ON_TRIGGER.value,
+                'send_interval_seconds': int(r.get('send_interval_seconds') or 0),
+                'is_active': int(r.get('is_active') or 0),
+            })
+        return jsonify({'success': True, 'signals': out})
+    except Exception as e:
+        logger.error("读取 signal_rule 失败: %s", e, exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+    finally:
+        db.close()
+
+
+@bp.route('/api/signal_notify/signals', methods=['POST'])
+def signal_notify_create():
+    """1.2/1.3：创建一个信号（当前支持股价区间信号）"""
+    try:
+        data = request.get_json() or {}
+        stock_code = (data.get('stock_code') or '').strip()
+        stock_name = (data.get('stock_name') or '').strip()
+        group_ids = data.get('group_ids') or []
+        params = data.get('params') or {}
+        signal_type_raw = (data.get('signal_type') or SingleType.PRICE_RANGE.value).strip()
+        send_type_raw = (data.get('send_type') or SendType.ON_TRIGGER.value).strip()
+        send_interval_seconds = int(data.get('send_interval_seconds') or 0)
+        template_text = data.get('message_template') or SignalMessageTemplate().template
+
+        if not stock_code:
+            return jsonify({'success': False, 'message': 'stock_code 不能为空'}), 400
+        if not isinstance(group_ids, list) or not group_ids:
+            return jsonify({'success': False, 'message': 'group_ids 不能为空且必须是数组'}), 400
+        try:
+            signal_type = SingleType(signal_type_raw)
+        except ValueError:
+            valid_types = [x.value for x in SingleType]
+            return jsonify({'success': False, 'message': f'signal_type 非法，可选: {valid_types}'}), 400
+
+        normalized_group_ids = []
+        for gid in group_ids:
+            try:
+                normalized_group_ids.append(int(gid))
+            except (TypeError, ValueError):
+                return jsonify({'success': False, 'message': f'group_id 非法: {gid}'}), 400
+
+        config = SignalConfig(
+            stock_code=stock_code,
+            stock_name=stock_name,
+            group_ids=normalized_group_ids,
+            signal_type=signal_type,
+            params=params,
+            message_template=SignalMessageTemplate(template=template_text),
+            send_type=SendType(send_type_raw),
+            send_interval_seconds=send_interval_seconds,
+        )
+        # 创建一次实例用于参数校验（如 lower/upper 合法性）
+        _ = SingleManager().add_signal(config)
+
+        db = Database.Create()
+        try:
+            ok, ret = db.create_signal_rule(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                group_ids_json=json.dumps(normalized_group_ids, ensure_ascii=False),
+                signal_type=signal_type_raw,
+                params_json=json.dumps(params, ensure_ascii=False),
+                message_template=template_text,
+                send_type=send_type_raw,
+                send_interval_seconds=send_interval_seconds,
+                is_active=1,
+            )
+            if not ok:
+                return jsonify({'success': False, 'message': f'持久化失败: {ret}'}), 500
+            return jsonify({'success': True, 'message': '信号创建成功', 'id': ret})
+        finally:
+            db.close()
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        logger.error("创建信号失败: %s", e, exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+
+
+@bp.route('/api/signal_notify/signals/<int:rule_id>', methods=['PUT'])
+def signal_notify_update(rule_id: int):
+    """编辑信号规则（用于自选列表逐行编辑）"""
+    try:
+        data = request.get_json() or {}
+        stock_name = data.get('stock_name')
+        group_ids = data.get('group_ids')
+        params = data.get('params')
+        message_template = data.get('message_template')
+        send_type = data.get('send_type')
+        send_interval_seconds = data.get('send_interval_seconds')
+        is_active = data.get('is_active')
+
+        group_ids_json = None
+        if group_ids is not None:
+            if not isinstance(group_ids, list):
+                return jsonify({'success': False, 'message': 'group_ids 必须是数组'}), 400
+            normalized = []
+            for gid in group_ids:
+                try:
+                    normalized.append(int(gid))
+                except (TypeError, ValueError):
+                    return jsonify({'success': False, 'message': f'group_id 非法: {gid}'}), 400
+            group_ids_json = json.dumps(normalized, ensure_ascii=False)
+
+        params_json = None
+        if params is not None:
+            if not isinstance(params, dict):
+                return jsonify({'success': False, 'message': 'params 必须是对象'}), 400
+            params_json = json.dumps(params, ensure_ascii=False)
+
+        if send_type is not None and send_type not in (SendType.ON_TRIGGER.value, SendType.INTERVAL.value):
+            return jsonify({'success': False, 'message': 'send_type 非法'}), 400
+
+        db = Database.Create()
+        try:
+            db.update_signal_rule(
+                rule_id=rule_id,
+                stock_name=stock_name,
+                group_ids_json=group_ids_json,
+                params_json=params_json,
+                message_template=message_template,
+                send_type=send_type,
+                send_interval_seconds=send_interval_seconds,
+                is_active=is_active,
+            )
+            return jsonify({'success': True})
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error("更新 signal_rule 失败: %s", e, exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+
+
+@bp.route('/api/signal_notify/update_price', methods=['POST'])
+def signal_notify_update_price():
+    """
+    用于交易时间刷新时调用：更新某只股票价格并检查触发。
+    body: { stock_code, price }
+    """
+    try:
+        data = request.get_json() or {}
+        stock_code = (data.get('stock_code') or '').strip()
+        price = data.get('price')
+        if not stock_code:
+            return jsonify({'success': False, 'message': 'stock_code 不能为空'}), 400
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': 'price 必须为数值'}), 400
+
+        messages = _run_signal_notify_for_stock(stock_code=stock_code, price=price)
+        return jsonify({'success': True, 'triggered': len(messages), 'messages': messages})
+    except Exception as e:
+        logger.error("更新价格并检查信号失败: %s", e, exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+
+
+@bp.route('/api/signal_notify/test_trigger', methods=['POST'])
+def signal_notify_test_trigger():
+    """
+    测试信号触发：
+    - 满足条件即发送
+    - 无视历史发送状态（不读取/不写入 signal_rule_state）
+    """
+    try:
+        data = request.get_json() or {}
+        stock_code = (data.get('stock_code') or '').strip()
+        price = data.get('price')
+        if not stock_code:
+            return jsonify({'success': False, 'message': 'stock_code 不能为空'}), 400
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': 'price 必须为数值'}), 400
+
+        db = Database.Create()
+        try:
+            rows = db.get_signal_rules(stock_code=stock_code, only_active=True)
+        finally:
+            db.close()
+
+        messages = []
+        for r in rows or []:
+            try:
+                signal = create_signal_instance(
+                    SignalConfig(
+                        stock_code=r.get('stock_code') or '',
+                        stock_name=r.get('stock_name') or '',
+                        group_ids=json.loads(r.get('group_ids_json') or '[]'),
+                        signal_type=SingleType(r.get('signal_type') or SingleType.PRICE_RANGE.value),
+                        params=json.loads(r.get('params_json') or '{}'),
+                        message_template=SignalMessageTemplate(
+                            template=r.get('message_template') or SignalMessageTemplate().template
+                        ),
+                        send_type=SendType(r.get('send_type') or SendType.ON_TRIGGER.value),
+                        send_interval_seconds=int(r.get('send_interval_seconds') or 0),
+                        runtime_state={"sent_lower": False, "sent_upper": False, "last_notified_date": ""},
+                    )
+                )
+                new_messages = signal.update(price)
+                for msg in new_messages:
+                    signal.send_message(msg, _send_signal_to_group)
+                    messages.append(msg)
+            except Exception as e:
+                logger.warning("测试触发 signal_rule(id=%s) 失败，已跳过: %s", r.get('id'), e)
+
+        return jsonify({'success': True, 'triggered': len(messages), 'messages': messages})
+    except Exception as e:
+        logger.error("测试触发信号失败: %s", e, exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+
+
+@bp.route('/api/signal_notify/test_trigger_realtime', methods=['POST'])
+def signal_notify_test_trigger_realtime():
+    """
+    点击“测试信号”时使用实时股价进行测试触发：
+    - 自动拉取实时价
+    - 满足条件即发送
+    - 无视历史发送状态
+    """
+    try:
+        data = request.get_json() or {}
+        stock_code = (data.get('stock_code') or '').strip()
+        if not stock_code:
+            return jsonify({'success': False, 'message': 'stock_code 不能为空'}), 400
+
+        from stocks.stock_quote_tencent import fetch_quotes
+        quotes = fetch_quotes([stock_code]) or {}
+        quote = None
+        if stock_code in quotes:
+            quote = quotes.get(stock_code)
+        if quote is None:
+            base = stock_code.split('.', 1)[0]
+            for key in (base, f"sh{base}", f"sz{base}", f"bj{base}", f"hk{base.zfill(5)}"):
+                if key in quotes:
+                    quote = quotes.get(key)
+                    break
+        if quote is None or quote.now is None:
+            return jsonify({'success': False, 'message': '未获取到实时股价'}), 400
+
+        price = float(quote.now)
+        # 复用测试逻辑：直接本地执行，避免二次 HTTP 调用
+        db = Database.Create()
+        try:
+            rows = db.get_signal_rules(stock_code=stock_code, only_active=True)
+        finally:
+            db.close()
+
+        messages = []
+        for r in rows or []:
+            try:
+                signal = create_signal_instance(
+                    SignalConfig(
+                        stock_code=r.get('stock_code') or '',
+                        stock_name=r.get('stock_name') or '',
+                        group_ids=json.loads(r.get('group_ids_json') or '[]'),
+                        signal_type=SingleType(r.get('signal_type') or SingleType.PRICE_RANGE.value),
+                        params=json.loads(r.get('params_json') or '{}'),
+                        message_template=SignalMessageTemplate(
+                            template=r.get('message_template') or SignalMessageTemplate().template
+                        ),
+                        send_type=SendType(r.get('send_type') or SendType.ON_TRIGGER.value),
+                        send_interval_seconds=int(r.get('send_interval_seconds') or 0),
+                        runtime_state={"sent_lower": False, "sent_upper": False, "last_notified_date": ""},
+                    )
+                )
+                new_messages = signal.update(price)
+                for msg in new_messages:
+                    signal.send_message(msg, _send_signal_to_group)
+                    messages.append(msg)
+            except Exception as e:
+                logger.warning("测试触发(实时价) signal_rule(id=%s) 失败，已跳过: %s", r.get('id'), e)
+
+        return jsonify({
+            'success': True,
+            'price': price,
+            'triggered': len(messages),
+            'messages': messages
+        })
+    except Exception as e:
+        logger.error("实时价测试触发失败: %s", e, exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+
+
+@bp.route('/api/signal_notify/signals/<int:rule_id>/active', methods=['PUT'])
+def signal_notify_set_active(rule_id: int):
+    """启用/停用信号规则"""
+    data = request.get_json() or {}
+    is_active = data.get('is_active')
+    if is_active is None:
+        return jsonify({'success': False, 'message': '缺少 is_active'}), 400
+    try:
+        is_active = 1 if bool(is_active) else 0
+        db = Database.Create()
+        try:
+            db.set_signal_rule_active(rule_id, is_active)
+            return jsonify({'success': True})
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error("设置 signal_rule 启用状态失败: %s", e, exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+
+
+@bp.route('/api/signal_notify/signals/<int:rule_id>', methods=['DELETE'])
+def signal_notify_delete(rule_id: int):
+    """删除信号规则"""
+    try:
+        db = Database.Create()
+        try:
+            db.delete_signal_rule(rule_id)
+            return jsonify({'success': True})
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error("删除 signal_rule 失败: %s", e, exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+
 @bp.route('/market_open_score')
 def market_open_score():
     """今日大盘开盘评分"""
     return render_template('market_open_score.html')
 
 
-def _get_positions_with_market():
+def _get_positions_with_market(user_id: int):
     """
-    获取持仓信息以及当前价/总市值（只读视图）。
+    获取指定用户的持仓信息以及当前价/总市值（只读视图）。
     当前价来自 stock_data 中该股票最近一个交易日的 close。
     """
     db = Database.Create()
     try:
         from datetime import datetime as _dt
+        uid = int(user_id)
         # 兼容 SQLite / MySQL 的最近交易日查询
         if db.is_sqlite:
             sql = """
@@ -151,6 +579,7 @@ def _get_positions_with_market():
                     FROM stock_data sd2
                     WHERE sd2.stock_code = p.stock_code
                  )
+                WHERE p.user_id = %s
                 ORDER BY p.id DESC
             """
         else:
@@ -176,9 +605,10 @@ def _get_positions_with_market():
                     FROM stock_data sd2
                     WHERE sd2.stock_code = p.stock_code
                  )
+                WHERE p.user_id = %s
                 ORDER BY p.id DESC
             """
-        rows = db.fetch_all(sql) or []
+        rows = db.fetch_all(sql, (uid,)) or []
         _fill_positions_stock_name_from_basic(db, rows)
 
         # 计算持仓天数：按日期计算（首次买入 trade_date -> 今天日期；查不到则回退 created_at）
@@ -197,10 +627,10 @@ def _get_positions_with_market():
                     f"""
                     SELECT stock_code, MIN(trade_date) AS first_buy_date
                     FROM transactions
-                    WHERE action='buy' AND stock_code IN ({placeholders})
+                    WHERE action='buy' AND user_id = %s AND stock_code IN ({placeholders})
                     GROUP BY stock_code
                     """,
-                    tuple(codes),
+                    tuple([uid] + codes),
                 )
                 for br in buy_rows or []:
                     sc = br.get("stock_code")
@@ -350,9 +780,89 @@ def _fill_records_stock_name_from_basic(db: Database, rows: list, code_key: str 
 
 @bp.route('/positions')
 def positions_page():
-    """持仓列表页面（只读）"""
-    positions = _get_positions_with_market()
+    """持仓列表页面（只读），需登录，仅展示当前账号持仓。"""
+    if 'user_id' not in session:
+        return redirect(url_for('main.index'))
+    positions = _get_positions_with_market(int(session['user_id']))
     return render_template('positions.html', positions=positions)
+
+
+
+@bp.route('/watchlist')
+def watchlist_page():
+    """自选列表页面（Excel 风格，数据在后续阶段补齐）"""
+    # 阶段六 1 只要求页面与样式落地；后续阶段再接入自选列表数据逻辑
+    return render_template('watchlist.html', watchlist=[])
+
+
+@bp.route('/api/watchlist', methods=['GET'])
+def api_watchlist_get():
+    """已登录用户从数据库读取自选列表（跨设备同步）。"""
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': '未登录', 'require_login': True}), 401
+    db = Database.Create()
+    try:
+        items = db.get_user_watchlist(int(session['user_id']))
+        return jsonify({'success': True, 'items': items})
+    except Exception as e:
+        logger.error('读取自选列表失败: %s', e, exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+    finally:
+        db.close()
+
+
+@bp.route('/api/watchlist', methods=['PUT'])
+def api_watchlist_put():
+    """已登录用户将自选列表整体写入数据库。"""
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': '未登录', 'require_login': True}), 401
+    try:
+        data = request.get_json() or {}
+        raw_items = data.get('items')
+        if not isinstance(raw_items, list):
+            return jsonify({'success': False, 'message': 'items 必须为数组'}), 400
+        normalized = []
+        for it in raw_items:
+            if not isinstance(it, dict):
+                continue
+            sc = str(it.get('stock_code') or '').strip()
+            if not sc:
+                continue
+            normalized.append({
+                'stock_code': sc,
+                'stock_name': str(it.get('stock_name') or '').strip(),
+            })
+        db = Database.Create()
+        try:
+            db.replace_user_watchlist(int(session['user_id']), normalized)
+            return jsonify({'success': True})
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error('保存自选列表失败: %s', e, exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+
+
+@bp.route('/api/positions/simple', methods=['GET'])
+def api_positions_simple():
+    """返回当前登录用户持仓的简要信息（用于自选列表自动补齐）；未登录返回空列表。"""
+    try:
+        if 'user_id' not in session:
+            return jsonify({'success': True, 'positions': []})
+        positions = _get_positions_with_market(int(session['user_id'])) or []
+        simple = []
+        for p in positions:
+            sc = (p.get('stock_code') or '').strip()
+            if not sc:
+                continue
+            simple.append({
+                'stock_code': sc,
+                'stock_name': p.get('stock_name') or '',
+            })
+        return jsonify({'success': True, 'positions': simple})
+    except Exception as e:
+        logger.error('获取持仓简要信息失败: %s', str(e), exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
 
 
 @bp.route('/positions/trade', methods=['GET', 'POST'])
@@ -365,6 +875,8 @@ def position_trade_page():
     from datetime import date
 
     if request.method == 'GET':
+        if 'user_id' not in session:
+            return redirect(url_for('main.index'))
         today = date.today().strftime('%Y-%m-%d')
         stock_code = (request.args.get('stock_code') or '').strip()
         stock_name = (request.args.get('stock_name') or '').strip()
@@ -378,6 +890,8 @@ def position_trade_page():
         )
 
     # POST
+    if 'user_id' not in session:
+        return redirect(url_for('main.index'))
     form = request.form
     stock_code = (form.get('stock_code') or '').strip()
     stock_name = (form.get('stock_name') or '').strip() or None
@@ -429,6 +943,7 @@ def position_trade_page():
             stock_name = basic_name
         _apply_position_trade(
             db=db,
+            user_id=int(session['user_id']),
             stock_code=stock_code,
             stock_name=stock_name,
             action=action,
@@ -471,21 +986,22 @@ def position_trade_page():
     return redirect(url_for('main.positions_page'))
 
 
-def _apply_position_trade(db, stock_code: str, stock_name: str, action: str,
+def _apply_position_trade(db, user_id: int, stock_code: str, stock_name: str, action: str,
                           price: float, quantity: float, fee: float,
                           trade_date: str):
-    """在一个已打开的 db 连接上应用一笔买入/卖出，并写入 transactions 与更新 positions。"""
+    """在一个已打开的 db 连接上应用一笔买入/卖出，并写入 transactions 与更新 positions（按 user_id 隔离）。"""
+    uid = int(user_id)
     # 写入交易流水
     db.execute(
         '''INSERT INTO transactions
-           (stock_code, action, price, quantity, fee, trade_date)
-           VALUES (%s, %s, %s, %s, %s, %s)''',
-        (stock_code, action, price, quantity, fee, trade_date)
+           (user_id, stock_code, action, price, quantity, fee, trade_date)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)''',
+        (uid, stock_code, action, price, quantity, fee, trade_date)
     )
     # 查询现有持仓
     row = db.fetch_one(
-        'SELECT stock_code, stock_name, quantity, cost_price FROM positions WHERE stock_code = %s',
-        (stock_code,)
+        'SELECT stock_code, stock_name, quantity, cost_price FROM positions WHERE stock_code = %s AND user_id = %s',
+        (stock_code, uid)
     )
     if action == 'buy':
         if row:
@@ -494,22 +1010,22 @@ def _apply_position_trade(db, stock_code: str, stock_name: str, action: str,
             new_qty = old_qty + quantity
             if new_qty <= 0:
                 # 极端情况，直接删除持仓
-                db.execute('DELETE FROM positions WHERE stock_code = %s', (stock_code,))
+                db.execute('DELETE FROM positions WHERE stock_code = %s AND user_id = %s', (stock_code, uid))
             else:
                 total_cost = old_cost * old_qty + price * quantity + fee
                 new_cost = total_cost / new_qty
                 db.execute(
                     '''UPDATE positions
                        SET quantity = %s, cost_price = %s, stock_name = %s, updated_at = CURRENT_TIMESTAMP
-                       WHERE stock_code = %s''',
-                    (new_qty, new_cost, stock_name or row.get('stock_name'), stock_code)
+                       WHERE stock_code = %s AND user_id = %s''',
+                    (new_qty, new_cost, stock_name or row.get('stock_name'), stock_code, uid)
                 )
         else:
             db.execute(
                 '''INSERT INTO positions
-                   (stock_code, stock_name, quantity, cost_price)
-                   VALUES (%s, %s, %s, %s)''',
-                (stock_code, stock_name, quantity, price)
+                   (user_id, stock_code, stock_name, quantity, cost_price)
+                   VALUES (%s, %s, %s, %s, %s)''',
+                (uid, stock_code, stock_name, quantity, price)
             )
     elif action == 'sell':
         if not row:
@@ -520,14 +1036,14 @@ def _apply_position_trade(db, stock_code: str, stock_name: str, action: str,
         new_qty = old_qty - quantity
         if new_qty <= 0:
             # 卖光后从当前持仓中移除（历史信息保留在 transactions 中）
-            db.execute('DELETE FROM positions WHERE stock_code = %s', (stock_code,))
+            db.execute('DELETE FROM positions WHERE stock_code = %s AND user_id = %s', (stock_code, uid))
         else:
             # 简化处理：保留原成本价
             db.execute(
                 '''UPDATE positions
                    SET quantity = %s, updated_at = CURRENT_TIMESTAMP
-                   WHERE stock_code = %s''',
-                (new_qty, stock_code)
+                   WHERE stock_code = %s AND user_id = %s''',
+                (new_qty, stock_code, uid)
             )
     else:
         raise ValueError('未知的操作类型')
@@ -536,9 +1052,11 @@ def _apply_position_trade(db, stock_code: str, stock_name: str, action: str,
 @bp.route('/api/positions/trade', methods=['POST'])
 def api_position_trade():
     """
-    录入一笔买入/卖出操作：
+    录入一笔买入/卖出操作（当前登录用户）：
     body: {stock_code, stock_name?, action: buy/sell, price, quantity, fee?, trade_date?}
     """
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': '未登录', 'require_login': True}), 401
     data = request.get_json() or {}
     stock_code = (data.get('stock_code') or '').strip()
     stock_name = (data.get('stock_name') or '').strip() or None
@@ -572,6 +1090,7 @@ def api_position_trade():
             stock_name = basic_name
         _apply_position_trade(
             db=db,
+            user_id=int(session['user_id']),
             stock_code=stock_code,
             stock_name=stock_name,
             action=action,
@@ -643,18 +1162,21 @@ def api_quotes_tencent():
 
 @bp.route('/api/positions/<stock_code>/history', methods=['GET'])
 def api_position_history(stock_code):
-    """获取某只股票的历史交易记录"""
+    """获取当前用户对某只股票的历史交易记录"""
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': '未登录', 'require_login': True}), 401
     stock_code = (stock_code or '').strip()
     if not stock_code:
         return jsonify({'success': False, 'message': '股票代码不能为空'}), 400
+    uid = int(session['user_id'])
     db = Database.Create()
     try:
         rows = db.fetch_all(
             '''SELECT id, stock_code, action, price, quantity, fee, trade_date, created_at
                FROM transactions
-               WHERE stock_code = %s
+               WHERE stock_code = %s AND user_id = %s
                ORDER BY trade_date DESC, id DESC''',
-            (stock_code,)
+            (stock_code, uid)
         )
         records = []
         for r in rows or []:
@@ -680,14 +1202,19 @@ def api_position_history(stock_code):
 
 @bp.route('/positions/transactions')
 def positions_transactions_page():
-    """所有交易流水列表页面（历史池子）"""
+    """当前登录用户的所有交易流水列表页面"""
+    if 'user_id' not in session:
+        return redirect(url_for('main.index'))
     embed = (request.args.get('embed') or '').strip() in ('1', 'true', 'yes', 'on')
+    uid = int(session['user_id'])
     db = Database.Create()
     try:
         rows = db.fetch_all(
             '''SELECT id, stock_code, action, price, quantity, fee, trade_date, created_at
                FROM transactions
-               ORDER BY trade_date DESC, id DESC'''
+               WHERE user_id = %s
+               ORDER BY trade_date DESC, id DESC''',
+            (uid,)
         )
         records = []
         for r in rows or []:
@@ -718,20 +1245,23 @@ def positions_transactions_page():
 
 @bp.route('/positions/<stock_code>/history_page')
 def position_history_page(stock_code):
-    """单票历史交易明细页面"""
+    """当前用户单票历史交易明细页面"""
+    if 'user_id' not in session:
+        return redirect(url_for('main.index'))
     stock_code = (stock_code or '').strip()
     if not stock_code:
         return render_template('position_history.html', stock_code='', stock_name='', records=[], summary={}, error_message='股票代码不能为空')
 
+    uid = int(session['user_id'])
     db = Database.Create()
     try:
         # 查询基本交易记录
         rows = db.fetch_all(
             '''SELECT stock_code, action, price, quantity, fee, trade_date, created_at
                FROM transactions
-               WHERE stock_code = %s
+               WHERE stock_code = %s AND user_id = %s
                ORDER BY trade_date DESC, id DESC''',
-            (stock_code,)
+            (stock_code, uid)
         )
         records = []
         total_buy_qty = 0.0
@@ -765,8 +1295,8 @@ def position_history_page(stock_code):
         pos = db.fetch_one(
             '''SELECT stock_name, quantity, cost_price
                FROM positions
-               WHERE stock_code = %s''',
-            (stock_code,)
+               WHERE stock_code = %s AND user_id = %s''',
+            (stock_code, uid)
         )
         stock_name = ''
         current_qty = None
@@ -1129,7 +1659,7 @@ def update_stock_list_api():
 def sync_stock_basic_api():
     """手动触发：从 AKShare 同步股票基础信息到 stock_basic 表（用于测试按钮）"""
     try:
-        from stocks.stock_basic_manager import StockBasicManager
+        from stocks.stock_basic_manager import StockBasicManager  # type: ignore
 
         # 确保表结构存在（MySQL/SQLite 双引擎）
         db = Database.Create()
@@ -2042,7 +2572,7 @@ def test_send_image():
         filename = 'test_image' + suffix
         tmpdir = tempfile.mkdtemp()
         try:
-            import nga_format
+            import nga_format  # type: ignore
             fullpath = nga_format.util_down(url, tmpdir, filename, '', headers=headers, cookies=cookies)
             wx_instance = getattr(stockGlobal, 'wx', None)
             if wx_instance is None:
@@ -2101,6 +2631,14 @@ def update_all_stocks(SkipZeroSocks = True):
                             message = message + "\n" + signal['message']
 
                     signalsMessages.append(message)
+                    # 自动执行信号通知系统（价格区间等），并将触发结果并入消息队列
+                    try:
+                        latest_close = float(df.iloc[-1]['close'])
+                        notify_messages = _run_signal_notify_for_stock(stock_code=stock['code'], price=latest_close)
+                        for notify_msg in notify_messages:
+                            signalsMessages.append(notify_msg)
+                    except Exception as notify_err:
+                        logger.warning("自动执行 signal_notify 失败 (%s): %s", stock['code'], notify_err)
                     updated_count += 1
                     logger.info(f"股票 {stock['code']} 更新成功: {message}")
                 else:

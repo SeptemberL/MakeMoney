@@ -100,6 +100,24 @@ class Database:
         )
         return r is not None
 
+    def column_exists(self, table_name: str, column_name: str) -> bool:
+        """判断表中是否已有某列（用于迁移）。"""
+        try:
+            if self.is_sqlite:
+                rows = self.fetch_all(f'PRAGMA table_info({table_name})')
+                for r in rows or []:
+                    if isinstance(r, dict) and r.get('name') == column_name:
+                        return True
+                return False
+            r = self.fetch_one(
+                "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+                "AND TABLE_NAME = %s AND COLUMN_NAME = %s LIMIT 1",
+                (table_name, column_name),
+            )
+            return r is not None
+        except Exception:
+            return False
+
     # ─────────────────────────── 连接管理 ────────────────────────────────────
 
     def connect(self):
@@ -255,6 +273,31 @@ class Database:
             self._init_database_sqlite()
         else:
             self._init_database_mysql()
+        self.migrate_positions_transactions_portfolio_user_id()
+
+    def migrate_positions_transactions_portfolio_user_id(self):
+        """旧库为持仓/流水/组合表增加 user_id，历史数据归到首个用户（或默认 1）。"""
+        try:
+            row = self.fetch_one('SELECT MIN(id) AS id FROM users')
+            fallback = int(row['id']) if row and row.get('id') is not None else 1
+        except Exception:
+            fallback = 1
+        for tname in ('positions', 'transactions', 'portfolio'):
+            try:
+                if not self.table_exists(tname):
+                    continue
+                if self.column_exists(tname, 'user_id'):
+                    continue
+                if self.is_sqlite:
+                    self.execute(
+                        f'ALTER TABLE {tname} ADD COLUMN user_id INTEGER NOT NULL DEFAULT {int(fallback)}'
+                    )
+                else:
+                    self.execute(
+                        f'ALTER TABLE {tname} ADD COLUMN user_id INT NOT NULL DEFAULT {int(fallback)}'
+                    )
+            except Exception as e:
+                logger.warning('迁移表 %s 增加 user_id 失败: %s', tname, e)
 
     def _init_database_sqlite(self):
         self.execute('''CREATE TABLE IF NOT EXISTS stock_config (
@@ -319,34 +362,62 @@ class Database:
             last_login TIMESTAMP,
             settings TEXT
         )''')
-        # 仓位相关表
+        # 仓位相关表（按 user_id 隔离，仅当前登录用户可见）
         self.execute('''CREATE TABLE IF NOT EXISTS positions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             stock_code TEXT NOT NULL,
             stock_name TEXT,
             quantity REAL NOT NULL,
             cost_price REAL NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            UNIQUE(user_id, stock_code)
         )''')
         self.execute('''CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             stock_code TEXT NOT NULL,
             action TEXT NOT NULL,
             price REAL NOT NULL,
             quantity REAL NOT NULL,
             fee REAL DEFAULT 0,
             trade_date DATE NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )''')
         self.execute('''CREATE TABLE IF NOT EXISTS portfolio (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             total_capital REAL DEFAULT 0,
             available_cash REAL DEFAULT 0,
             market_value REAL DEFAULT 0,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )''')
         self._create_message_group_tables_sqlite()
+        self._create_signal_rule_tables_sqlite()
+        self._create_signal_rule_state_tables_sqlite()
+        self._create_user_watchlist_tables_sqlite()
+
+    def _create_user_watchlist_tables_sqlite(self):
+        """用户自选列表（SQLite），按账号跨设备同步"""
+        self.execute('''CREATE TABLE IF NOT EXISTS user_watchlist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            stock_code TEXT NOT NULL,
+            stock_name TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            UNIQUE(user_id, stock_code)
+        )''')
+        try:
+            self.execute('CREATE INDEX IF NOT EXISTS idx_user_watchlist_user ON user_watchlist (user_id)')
+        except Exception:
+            pass
 
     def _create_message_group_tables_sqlite(self):
         """聊天群列表表（SQLite）"""
@@ -427,34 +498,65 @@ class Database:
             last_login TIMESTAMP NULL,
             settings TEXT
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
-        # 仓位相关表
+        # 仓位相关表（按 user_id 隔离）
         self.execute('''CREATE TABLE IF NOT EXISTS positions (
             id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
             stock_code VARCHAR(32) NOT NULL,
             stock_name VARCHAR(128),
             quantity DOUBLE NOT NULL,
             cost_price DOUBLE NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_positions_user_stock (user_id, stock_code),
+            KEY idx_positions_user (user_id),
+            CONSTRAINT fk_positions_user
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
         self.execute('''CREATE TABLE IF NOT EXISTS transactions (
             id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
             stock_code VARCHAR(32) NOT NULL,
             action VARCHAR(8) NOT NULL,
             price DOUBLE NOT NULL,
             quantity DOUBLE NOT NULL,
             fee DOUBLE DEFAULT 0,
             trade_date DATE NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            KEY idx_transactions_user (user_id),
+            CONSTRAINT fk_transactions_user
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
         self.execute('''CREATE TABLE IF NOT EXISTS portfolio (
             id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
             total_capital DOUBLE DEFAULT 0,
             available_cash DOUBLE DEFAULT 0,
             market_value DOUBLE DEFAULT 0,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_portfolio_user (user_id),
+            CONSTRAINT fk_portfolio_user
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
         self._create_message_group_tables_mysql()
+        self._create_signal_rule_tables_mysql()
+        self._create_signal_rule_state_tables_mysql()
+        self._create_user_watchlist_tables_mysql()
+
+    def _create_user_watchlist_tables_mysql(self):
+        """用户自选列表（MySQL）"""
+        self.execute('''CREATE TABLE IF NOT EXISTS user_watchlist (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            stock_code VARCHAR(32) NOT NULL,
+            stock_name VARCHAR(128),
+            sort_order INT NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_user_watchlist_user_stock (user_id, stock_code),
+            KEY idx_user_watchlist_user (user_id),
+            CONSTRAINT fk_user_watchlist_user
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
 
     def _create_message_group_tables_mysql(self):
         """聊天群列表表（MySQL）"""
@@ -476,6 +578,76 @@ class Database:
             FOREIGN KEY (group_id) REFERENCES message_group(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
 
+    def _create_signal_rule_tables_sqlite(self):
+        """信号规则表（SQLite）"""
+        self.execute('''CREATE TABLE IF NOT EXISTS signal_rule (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stock_code TEXT NOT NULL,
+            stock_name TEXT,
+            group_ids_json TEXT NOT NULL,
+            signal_type TEXT NOT NULL,
+            params_json TEXT NOT NULL,
+            message_template TEXT NOT NULL,
+            send_type TEXT NOT NULL DEFAULT 'on_trigger',
+            send_interval_seconds INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        try:
+            self.execute("CREATE INDEX IF NOT EXISTS idx_signal_rule_stock_code ON signal_rule (stock_code)")
+        except Exception:
+            pass
+        try:
+            self.execute("CREATE INDEX IF NOT EXISTS idx_signal_rule_active ON signal_rule (is_active)")
+        except Exception:
+            pass
+
+    def _create_signal_rule_tables_mysql(self):
+        """信号规则表（MySQL）"""
+        self.execute('''CREATE TABLE IF NOT EXISTS signal_rule (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            stock_code VARCHAR(32) NOT NULL,
+            stock_name VARCHAR(128),
+            group_ids_json TEXT NOT NULL,
+            signal_type VARCHAR(64) NOT NULL,
+            params_json TEXT NOT NULL,
+            message_template TEXT NOT NULL,
+            send_type VARCHAR(32) NOT NULL DEFAULT 'on_trigger',
+            send_interval_seconds INT NOT NULL DEFAULT 0,
+            is_active TINYINT NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            KEY idx_signal_rule_stock_code (stock_code),
+            KEY idx_signal_rule_active (is_active)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+
+    def _create_signal_rule_state_tables_sqlite(self):
+        """信号规则状态表（SQLite）"""
+        self.execute('''CREATE TABLE IF NOT EXISTS signal_rule_state (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_id INTEGER NOT NULL UNIQUE,
+            state_json TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (rule_id) REFERENCES signal_rule(id) ON DELETE CASCADE
+        )''')
+        try:
+            self.execute("CREATE INDEX IF NOT EXISTS idx_signal_rule_state_rule_id ON signal_rule_state (rule_id)")
+        except Exception:
+            pass
+
+    def _create_signal_rule_state_tables_mysql(self):
+        """信号规则状态表（MySQL）"""
+        self.execute('''CREATE TABLE IF NOT EXISTS signal_rule_state (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            rule_id INT NOT NULL,
+            state_json TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_signal_rule_state_rule_id (rule_id),
+            CONSTRAINT fk_signal_rule_state_rule
+                FOREIGN KEY (rule_id) REFERENCES signal_rule(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+
     # ─────────────────────────── 聊天群列表 ────────────────────────────────────
 
     def ensure_message_group_tables(self):
@@ -484,6 +656,196 @@ class Database:
             self._create_message_group_tables_sqlite()
         else:
             self._create_message_group_tables_mysql()
+
+    def ensure_signal_rule_tables(self):
+        """确保 signal_rule 表存在（不依赖 init_database）"""
+        if self.is_sqlite:
+            self._create_signal_rule_tables_sqlite()
+        else:
+            self._create_signal_rule_tables_mysql()
+
+    def ensure_signal_rule_state_tables(self):
+        """确保 signal_rule_state 表存在（不依赖 init_database）"""
+        self.ensure_signal_rule_tables()
+        if self.is_sqlite:
+            self._create_signal_rule_state_tables_sqlite()
+        else:
+            self._create_signal_rule_state_tables_mysql()
+
+    def ensure_user_watchlist_tables(self):
+        """确保 user_watchlist 表存在"""
+        if self.is_sqlite:
+            self._create_user_watchlist_tables_sqlite()
+        else:
+            self._create_user_watchlist_tables_mysql()
+
+    def get_user_watchlist(self, user_id: int):
+        """返回当前用户的自选列表，按 sort_order 排序。"""
+        self.ensure_user_watchlist_tables()
+        rows = self.fetch_all(
+            'SELECT stock_code, stock_name, sort_order FROM user_watchlist WHERE user_id = %s '
+            'ORDER BY sort_order ASC, id ASC',
+            (int(user_id),)
+        )
+        out = []
+        for r in rows or []:
+            out.append({
+                'stock_code': (r.get('stock_code') or '').strip(),
+                'stock_name': (r.get('stock_name') or '').strip(),
+            })
+        return out
+
+    def replace_user_watchlist(self, user_id: int, items):
+        """用新列表整体替换用户自选（先删后插）。"""
+        self.ensure_user_watchlist_tables()
+        uid = int(user_id)
+        self.execute('DELETE FROM user_watchlist WHERE user_id = %s', (uid,))
+        order = 0
+        for it in items or []:
+            sc = str((it or {}).get('stock_code') or '').strip()
+            if not sc:
+                continue
+            sn = str((it or {}).get('stock_name') or '').strip()
+            self.execute(
+                'INSERT INTO user_watchlist (user_id, stock_code, stock_name, sort_order) '
+                'VALUES (%s, %s, %s, %s)',
+                (uid, sc, sn or None, order),
+            )
+            order += 1
+        return True
+
+    def create_signal_rule(self, stock_code, stock_name, group_ids_json, signal_type,
+                           params_json, message_template, send_type='on_trigger',
+                           send_interval_seconds=0, is_active=1):
+        """创建一条信号规则，返回 (True, id) 或 (False, error_msg)。"""
+        self.ensure_signal_rule_tables()
+        try:
+            self.execute(
+                '''INSERT INTO signal_rule
+                   (stock_code, stock_name, group_ids_json, signal_type, params_json, message_template,
+                    send_type, send_interval_seconds, is_active)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                (
+                    stock_code, stock_name, group_ids_json, signal_type, params_json,
+                    message_template, send_type, int(send_interval_seconds or 0), int(is_active or 0)
+                )
+            )
+            if self.is_sqlite:
+                row = self.fetch_one('SELECT last_insert_rowid() AS id')
+                return (True, row['id'])
+            row = self.fetch_one('SELECT LAST_INSERT_ID() AS id')
+            return (True, row['id'])
+        except Exception as e:
+            logger.error(f"创建 signal_rule 失败: {str(e)}")
+            return (False, str(e))
+
+    def update_signal_rule(self, rule_id: int, stock_name=None, group_ids_json=None,
+                           params_json=None, message_template=None, send_type=None,
+                           send_interval_seconds=None, is_active=None):
+        """更新信号规则，支持部分字段更新。"""
+        self.ensure_signal_rule_tables()
+        updates = []
+        params = []
+        if stock_name is not None:
+            updates.append("stock_name = %s")
+            params.append(stock_name)
+        if group_ids_json is not None:
+            updates.append("group_ids_json = %s")
+            params.append(group_ids_json)
+        if params_json is not None:
+            updates.append("params_json = %s")
+            params.append(params_json)
+        if message_template is not None:
+            updates.append("message_template = %s")
+            params.append(message_template)
+        if send_type is not None:
+            updates.append("send_type = %s")
+            params.append(send_type)
+        if send_interval_seconds is not None:
+            updates.append("send_interval_seconds = %s")
+            params.append(int(send_interval_seconds))
+        if is_active is not None:
+            updates.append("is_active = %s")
+            params.append(int(is_active))
+        if not updates:
+            return True
+        updates.append("updated_at = CURRENT_TIMESTAMP")
+        sql = f"UPDATE signal_rule SET {', '.join(updates)} WHERE id = %s"
+        params.append(int(rule_id))
+        self.execute(sql, tuple(params))
+        return True
+
+    def get_signal_rules(self, stock_code=None, only_active=True):
+        """查询信号规则列表。"""
+        self.ensure_signal_rule_tables()
+        where = []
+        params = []
+        if only_active:
+            where.append('is_active = %s')
+            params.append(1)
+        if stock_code is not None:
+            where.append('stock_code = %s')
+            params.append(stock_code)
+        sql = (
+            'SELECT id, stock_code, stock_name, group_ids_json, signal_type, params_json,'
+            ' message_template, send_type, send_interval_seconds, is_active, created_at, updated_at'
+            ' FROM signal_rule'
+        )
+        if where:
+            sql += ' WHERE ' + ' AND '.join(where)
+        sql += ' ORDER BY id DESC'
+        return self.fetch_all(sql, tuple(params) if params else None)
+
+    def set_signal_rule_active(self, rule_id: int, is_active: int):
+        """启用/停用信号规则。"""
+        self.ensure_signal_rule_tables()
+        self.execute(
+            'UPDATE signal_rule SET is_active = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s',
+            (int(is_active), int(rule_id))
+        )
+        return True
+
+    def delete_signal_rule(self, rule_id: int):
+        """删除信号规则。"""
+        self.ensure_signal_rule_tables()
+        self.execute('DELETE FROM signal_rule WHERE id = %s', (int(rule_id),))
+        return True
+
+    def get_signal_rule_states(self, rule_ids):
+        """批量读取规则状态，返回 {rule_id: state_json_str}。"""
+        self.ensure_signal_rule_state_tables()
+        rule_ids = [int(x) for x in (rule_ids or [])]
+        if not rule_ids:
+            return {}
+        placeholders = ",".join(["%s"] * len(rule_ids))
+        rows = self.fetch_all(
+            f"SELECT rule_id, state_json FROM signal_rule_state WHERE rule_id IN ({placeholders})",
+            tuple(rule_ids)
+        )
+        return {int(r['rule_id']): (r.get('state_json') or '{}') for r in (rows or [])}
+
+    def upsert_signal_rule_state(self, rule_id: int, state_json: str):
+        """写入或更新单条规则状态。"""
+        self.ensure_signal_rule_state_tables()
+        if self.is_sqlite:
+            self.execute(
+                '''INSERT INTO signal_rule_state (rule_id, state_json, updated_at)
+                   VALUES (%s, %s, CURRENT_TIMESTAMP)
+                   ON CONFLICT(rule_id) DO UPDATE SET
+                       state_json=excluded.state_json,
+                       updated_at=CURRENT_TIMESTAMP''',
+                (int(rule_id), state_json)
+            )
+        else:
+            self.execute(
+                '''INSERT INTO signal_rule_state (rule_id, state_json)
+                   VALUES (%s, %s)
+                   ON DUPLICATE KEY UPDATE
+                       state_json=VALUES(state_json),
+                       updated_at=CURRENT_TIMESTAMP''',
+                (int(rule_id), state_json)
+            )
+        return True
 
     def get_all_message_groups(self, list_type=None):
         """获取所有群组；list_type 为 None 时返回所有类型。返回 [{id, group_id, list_type, chat_list: [str]}, ...]"""

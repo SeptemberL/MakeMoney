@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>股票信号通知配置</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body>
+<div class="container mt-4">
+    <h3>股票信号通知系统（基础版）</h3>
+    <p class="text-muted">通过“打开悬浮配置层”填写信号逻辑并创建信号。</p>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#signalEditorModal">打开悬浮配置层</button>
+    <button class="btn btn-outline-secondary ms-2" id="refreshSignalsBtn">刷新已注册信号</button>
+    <div class="mt-3">
+        <div id="editingHint" class="alert alert-info py-2" style="display:none;"></div>
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered align-middle">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>股票</th>
+                        <th>群组</th>
+                        <th>类型</th>
+                        <th>参数</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="signalsTbody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="signalEditorModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">信号编辑器（悬浮层）</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="signalForm">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">股票代码</label>
+                            <input class="form-control" id="stockCode" value="600000" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">股票名称</label>
+                            <input class="form-control" id="stockName" value="">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">群组 ID（逗号分隔）</label>
+                            <input class="form-control" id="groupIds" value="1" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">信号类型</label>
+                            <select class="form-select" id="signalType">
+                                <option value="price_range">价格区间</option>
+                                <option value="fibonacci_retrace">黄金分割回撤</option>
+                            </select>
+                        </div>
+                        <div class="col-12" id="priceRangeSection">
+                            <div class="row g-3">
+                                <div class="col-md-4">
+                                    <label class="form-label">下限</label>
+                                    <input type="number" step="0.001" class="form-control" id="lowerPrice" value="10.0">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">上限</label>
+                                    <input type="number" step="0.001" class="form-control" id="upperPrice" value="11.0">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-12" id="fibSection" style="display:none;">
+                            <div class="row g-3">
+                                <div class="col-md-4">
+                                    <label class="form-label">最低点</label>
+                                    <input type="number" step="0.001" class="form-control" id="fibLow" value="10.0">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">最高点</label>
+                                    <input type="number" step="0.001" class="form-control" id="fibHigh" value="12.0">
+                                </div>
+                                <div class="col-md-4 d-flex align-items-end">
+                                    <button type="button" class="btn btn-outline-secondary w-100" id="calcFibBtn">计算黄金分割档位</button>
+                                </div>
+                                <div class="col-12">
+                                    <div class="small text-muted mb-1">自动计算档位（高点 - (高点-低点) * 比例）</div>
+                                    <div class="border rounded p-2 bg-light" id="fibLevelsText">请先输入最低点和最高点</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">发送类型</label>
+                            <select class="form-select" id="sendType">
+                                <option value="on_trigger">触发即发送</option>
+                                <option value="interval">间隔发送（预留）</option>
+                            </select>
+                        </div>
+                        <div class="col-12" id="priceRangeTemplateSection">
+                            <label class="form-label">消息模板</label>
+                            <textarea class="form-control" id="messageTemplate" rows="2">股票 {stock_code}({stock_name}) 触发{signal_type}信号，当前价格: {price:.3f}，触发边界: {boundary}，区间[{lower:.3f}, {upper:.3f}]，时间: {time}</textarea>
+                        </div>
+                        <div class="col-12" id="fibTemplateSection" style="display:none;">
+                            <div class="small text-muted mb-2">黄金分割三类条件可分别设置消息（未填则使用规则主模板回退）。</div>
+                            <label class="form-label">常规买点（低于 0.382 档且高于 0.5 档区间触发）</label>
+                            <textarea class="form-control mb-2" id="fibTplNormalBuy" rows="2"></textarea>
+                            <label class="form-label">强支撑（低于 0.5 档且高于 0.618 档区间触发）</label>
+                            <textarea class="form-control mb-2" id="fibTplStrongSupport" rows="2"></textarea>
+                            <label class="form-label">黄金坑（低于 0.618 档触发）</label>
+                            <textarea class="form-control" id="fibTplGoldenPit" rows="2"></textarea>
+                        </div>
+                    </div>
+                </form>
+                <div class="mt-3">
+                    <label class="form-label">模拟价格检测（用于测试触发）</label>
+                    <div class="input-group">
+                        <input type="number" step="0.001" class="form-control" id="testPrice" placeholder="输入价格后测试">
+                        <button class="btn btn-outline-primary" id="testPriceBtn">提交检测</button>
+                    </div>
+                </div>
+                <pre id="testResult" class="mt-3" style="background:#f8f9fa;padding:12px;border-radius:6px;"></pre>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-warning me-auto" id="cancelEditBtn" style="display:none;">取消编辑</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-primary" id="saveSignalBtn">保存信号</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+const SIGNAL_TYPES = {
+    price_range: 'price_range',
+    fibonacci_retrace: 'fibonacci_retrace'
+};
+const DEFAULT_TEMPLATES = {
+    price_range: '股票 {stock_code}({stock_name}) 触发{signal_type}信号，当前价格: {price:.3f}，触发边界: {boundary}，区间[{lower:.3f}, {upper:.3f}]，时间: {time}',
+    fibonacci_retrace: '股票 {stock_code}({stock_name}) 触发{signal_type}，当前价格: {price:.3f}，区间[{fib_low:.3f}, {fib_high:.3f}]，档位(0.382/0.5/0.618): {level_382:.3f}/{level_500:.3f}/{level_618:.3f}，判定: {zone_label}，时间: {time}'
+};
+const DEFAULT_FIB_ZONE_TEMPLATES = {
+    normal_buy: '【常规买点】{stock_code}({stock_name}) 现价 {price:.3f}，区间[{fib_low:.3f},{fib_high:.3f}] 档位382/500/618: {level_382:.3f}/{level_500:.3f}/{level_618:.3f}，时间: {time}',
+    strong_support: '【强支撑】{stock_code}({stock_name}) 现价 {price:.3f}，区间[{fib_low:.3f},{fib_high:.3f}] 档位382/500/618: {level_382:.3f}/{level_500:.3f}/{level_618:.3f}，时间: {time}',
+    golden_pit: '【黄金坑】{stock_code}({stock_name}) 现价 {price:.3f}，区间[{fib_low:.3f},{fib_high:.3f}] 档位382/500/618: {level_382:.3f}/{level_500:.3f}/{level_618:.3f}，时间: {time}'
+};
+let editingRuleId = null;
+let signalCache = {};
+
+function parseGroupIds(raw) {
+    return String(raw || '')
+        .split(',')
+        .map(x => x.trim())
+        .filter(Boolean)
+        .map(x => Number(x));
+}
+
+function getSignalType() {
+    return document.getElementById('signalType').value;
+}
+
+function renderSignalTypeFields() {
+    const isFib = getSignalType() === SIGNAL_TYPES.fibonacci_retrace;
+    const fibSection = document.getElementById('fibSection');
+    const priceRangeSection = document.getElementById('priceRangeSection');
+    const priceRangeTemplateSection = document.getElementById('priceRangeTemplateSection');
+    const fibTemplateSection = document.getElementById('fibTemplateSection');
+    const lowerPrice = document.getElementById('lowerPrice');
+    const upperPrice = document.getElementById('upperPrice');
+    fibSection.style.display = isFib ? '' : 'none';
+    priceRangeSection.style.display = isFib ? 'none' : '';
+    priceRangeTemplateSection.style.display = isFib ? 'none' : '';
+    fibTemplateSection.style.display = isFib ? '' : 'none';
+    lowerPrice.required = !isFib;
+    upperPrice.required = !isFib;
+}
+
+function syncTemplateByType() {
+    const type = getSignalType();
+    if (type === SIGNAL_TYPES.fibonacci_retrace) {
+        fillDefaultFibZoneTemplatesIfNeeded();
+        return;
+    }
+    const textarea = document.getElementById('messageTemplate');
+    const current = (textarea.value || '').trim();
+    const allDefaults = Object.values(DEFAULT_TEMPLATES);
+    if (!current || allDefaults.includes(current)) {
+        textarea.value = DEFAULT_TEMPLATES.price_range;
+    }
+}
+
+function fillDefaultFibZoneTemplatesIfNeeded() {
+    const ids = [
+        ['fibTplNormalBuy', 'normal_buy'],
+        ['fibTplStrongSupport', 'strong_support'],
+        ['fibTplGoldenPit', 'golden_pit']
+    ];
+    let any = false;
+    ids.forEach(([elId, key]) => {
+        const el = document.getElementById(elId);
+        if (el && (el.value || '').trim()) any = true;
+    });
+    if (any) return;
+    ids.forEach(([elId, key]) => {
+        const el = document.getElementById(elId);
+        if (el) el.value = DEFAULT_FIB_ZONE_TEMPLATES[key] || '';
+    });
+}
+
+function pickFibMessageTemplateForDb() {
+    const a = (document.getElementById('fibTplNormalBuy')?.value || '').trim();
+    const b = (document.getElementById('fibTplStrongSupport')?.value || '').trim();
+    const c = (document.getElementById('fibTplGoldenPit')?.value || '').trim();
+    return a || b || c || DEFAULT_TEMPLATES.fibonacci_retrace;
+}
+
+function calcFibLevels() {
+    const low = Number(document.getElementById('fibLow').value);
+    const high = Number(document.getElementById('fibHigh').value);
+    const container = document.getElementById('fibLevelsText');
+    if (!Number.isFinite(low) || !Number.isFinite(high)) {
+        container.textContent = '请输入有效数值';
+        return null;
+    }
+    if (low >= high) {
+        container.textContent = '参数错误：最低点必须小于最高点';
+        return null;
+    }
+    const diff = high - low;
+    const l382 = high - diff * 0.382;
+    const l500 = high - diff * 0.5;
+    const l618 = high - diff * 0.618;
+    container.textContent = `0.382: ${l382.toFixed(3)} | 0.5: ${l500.toFixed(3)} | 0.618: ${l618.toFixed(3)}`;
+    return {low, high, level_382: l382, level_500: l500, level_618: l618};
+}
+
+async function refreshSignals() {
+    const resp = await fetch('/api/signal_notify/signals');
+    const data = await resp.json();
+    const tbody = document.getElementById('signalsTbody');
+    tbody.innerHTML = '';
+    signalCache = {};
+    const rows = (data && data.signals) || [];
+    rows.forEach(row => {
+        signalCache[row.id] = row;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${row.id}</td>
+            <td>${row.stock_code} ${row.stock_name || ''}</td>
+            <td>${(row.group_ids || []).join(',')}</td>
+            <td>${row.signal_type}</td>
+            <td>${JSON.stringify(row.params || {})}</td>
+            <td>${Number(row.is_active) === 1 ? '启用' : '停用'}</td>
+            <td>
+                <button class="btn btn-sm btn-outline-secondary" onclick="startEditSignal(${row.id})">编辑</button>
+                <button class="btn btn-sm btn-outline-primary" onclick="toggleSignal(${row.id}, ${Number(row.is_active) === 1 ? 'false' : 'true'})">
+                    ${Number(row.is_active) === 1 ? '停用' : '启用'}
+                </button>
+                <button class="btn btn-sm btn-outline-danger ms-1" onclick="deleteSignal(${row.id})">删除</button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function setEditMode(ruleId, stockCode) {
+    editingRuleId = ruleId;
+    const hint = document.getElementById('editingHint');
+    const cancelBtn = document.getElementById('cancelEditBtn');
+    const saveBtn = document.getElementById('saveSignalBtn');
+    const stockCodeInput = document.getElementById('stockCode');
+    const signalTypeSelect = document.getElementById('signalType');
+    if (editingRuleId) {
+        hint.style.display = '';
+        hint.textContent = `正在编辑规则 #${editingRuleId}（${stockCode || ''}）`;
+        cancelBtn.style.display = '';
+        saveBtn.textContent = '更新信号';
+        stockCodeInput.readOnly = true;
+        signalTypeSelect.disabled = true;
+    } else {
+        hint.style.display = 'none';
+        hint.textContent = '';
+        cancelBtn.style.display = 'none';
+        saveBtn.textContent = '保存信号';
+        stockCodeInput.readOnly = false;
+        signalTypeSelect.disabled = false;
+    }
+}
+
+function startEditSignal(ruleId) {
+    const row = signalCache[ruleId];
+    if (!row) return;
+    document.getElementById('stockCode').value = row.stock_code || '';
+    document.getElementById('stockName').value = row.stock_name || '';
+    document.getElementById('groupIds').value = (row.group_ids || []).join(',');
+    document.getElementById('signalType').value = row.signal_type || SIGNAL_TYPES.price_range;
+    renderSignalTypeFields();
+    if ((row.signal_type || '') === SIGNAL_TYPES.fibonacci_retrace) {
+        document.getElementById('fibLow').value = Number((row.params || {}).low || 0);
+        document.getElementById('fibHigh').value = Number((row.params || {}).high || 0);
+        calcFibLevels();
+        const t = (row.params || {}).templates || {};
+        document.getElementById('fibTplNormalBuy').value =
+            (t.normal_buy != null && String(t.normal_buy).trim() !== '') ? t.normal_buy : DEFAULT_FIB_ZONE_TEMPLATES.normal_buy;
+        document.getElementById('fibTplStrongSupport').value =
+            (t.strong_support != null && String(t.strong_support).trim() !== '') ? t.strong_support : DEFAULT_FIB_ZONE_TEMPLATES.strong_support;
+        document.getElementById('fibTplGoldenPit').value =
+            (t.golden_pit != null && String(t.golden_pit).trim() !== '') ? t.golden_pit : DEFAULT_FIB_ZONE_TEMPLATES.golden_pit;
+    } else {
+        document.getElementById('lowerPrice').value = Number((row.params || {}).lower || 0);
+        document.getElementById('upperPrice').value = Number((row.params || {}).upper || 0);
+    }
+    document.getElementById('sendType').value = row.send_type || 'on_trigger';
+    if ((row.signal_type || '') !== SIGNAL_TYPES.fibonacci_retrace) {
+        document.getElementById('messageTemplate').value = row.message_template || '';
+    }
+    setEditMode(ruleId, row.stock_code);
+    const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('signalEditorModal'));
+    modal.show();
+}
+
+function cancelEditSignal() {
+    setEditMode(null, '');
+}
+
+async function saveSignal() {
+    const signalType = getSignalType();
+    let params = {};
+    let messageTemplate = document.getElementById('messageTemplate').value;
+    if (signalType === SIGNAL_TYPES.fibonacci_retrace) {
+        const fib = calcFibLevels();
+        if (!fib) {
+            document.getElementById('testResult').textContent = '黄金分割参数不合法';
+            return;
+        }
+        params = {
+            low: fib.low,
+            high: fib.high,
+            templates: {
+                normal_buy: (document.getElementById('fibTplNormalBuy').value || '').trim(),
+                strong_support: (document.getElementById('fibTplStrongSupport').value || '').trim(),
+                golden_pit: (document.getElementById('fibTplGoldenPit').value || '').trim()
+            }
+        };
+        messageTemplate = pickFibMessageTemplateForDb();
+    } else {
+        params = {
+            lower: Number(document.getElementById('lowerPrice').value),
+            upper: Number(document.getElementById('upperPrice').value)
+        };
+    }
+    const payload = {
+        stock_code: document.getElementById('stockCode').value.trim(),
+        stock_name: document.getElementById('stockName').value.trim(),
+        group_ids: parseGroupIds(document.getElementById('groupIds').value),
+        signal_type: signalType,
+        params: params,
+        send_type: document.getElementById('sendType').value,
+        message_template: messageTemplate
+    };
+    const isEditing = Number.isInteger(editingRuleId);
+    const resp = await fetch(isEditing ? `/api/signal_notify/signals/${editingRuleId}` : '/api/signal_notify/signals', {
+        method: isEditing ? 'PUT' : 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    document.getElementById('testResult').textContent = JSON.stringify(data, null, 2);
+    if (data && data.success && isEditing) {
+        setEditMode(null, '');
+    }
+    await refreshSignals();
+}
+
+async function testPrice() {
+    const payload = {
+        stock_code: document.getElementById('stockCode').value.trim(),
+        price: Number(document.getElementById('testPrice').value)
+    };
+    const resp = await fetch('/api/signal_notify/update_price', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+    document.getElementById('testResult').textContent = JSON.stringify(data, null, 2);
+}
+
+async function toggleSignal(id, toActive) {
+    const resp = await fetch(`/api/signal_notify/signals/${id}/active`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({is_active: toActive})
+    });
+    const data = await resp.json();
+    document.getElementById('testResult').textContent = JSON.stringify(data, null, 2);
+    await refreshSignals();
+}
+
+async function deleteSignal(id) {
+    const resp = await fetch(`/api/signal_notify/signals/${id}`, {method: 'DELETE'});
+    const data = await resp.json();
+    document.getElementById('testResult').textContent = JSON.stringify(data, null, 2);
+    await refreshSignals();
+}
+
+document.getElementById('saveSignalBtn').addEventListener('click', saveSignal);
+document.getElementById('testPriceBtn').addEventListener('click', testPrice);
+document.getElementById('refreshSignalsBtn').addEventListener('click', refreshSignals);
+document.getElementById('signalType').addEventListener('change', function() {
+    renderSignalTypeFields();
+    syncTemplateByType();
+});
+document.getElementById('calcFibBtn').addEventListener('click', calcFibLevels);
+document.getElementById('fibLow').addEventListener('input', calcFibLevels);
+document.getElementById('fibHigh').addEventListener('input', calcFibLevels);
+document.getElementById('cancelEditBtn').addEventListener('click', cancelEditSignal);
+renderSignalTypeFields();
+syncTemplateByType();
+calcFibLevels();
+refreshSignals();
+</script>
+</body>
+</html>

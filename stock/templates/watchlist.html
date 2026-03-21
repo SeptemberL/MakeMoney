@@ -1,0 +1,1126 @@
+{% extends "index.html" %}
+
+{% block content %}
+<div class="watchlist-excel-page">
+  <style>
+    .text-purple { color: #6f42c1; } /* Bootstrap 紫色系 */
+    .text-yellow { color: #ffc107; } /* 接近 Bootstrap warning 黄 */
+
+    /* Excel-like 样式 */
+    /* 进入自选页隐藏顶部导航栏 + 标题（与持仓页行为一致） */
+    nav.navbar { display: none !important; }
+    .watchlist-page-title { display: none !important; }
+    .watchlist-excel-page {
+      width: 100%;
+      padding: 8px 12px;
+    }
+
+    .excel-wrap {
+      background: #ffffff;
+      border: 1px solid #cfd6df;
+      box-shadow: 0 1px 0 rgba(0,0,0,0.03);
+      padding: 8px;
+    }
+
+    table.excel-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: Calibri, "Segoe UI", Arial, sans-serif;
+      font-size: 13px;
+      color: #111;
+    }
+
+    table.excel-table th,
+    table.excel-table td {
+      border: 1px solid #d9d9d9; /* 网格线 */
+      padding: 4px 6px;
+      white-space: nowrap;
+      vertical-align: middle;
+      background: #fff;
+    }
+
+    .excel-multiline {
+      white-space: normal !important;
+      line-height: 1.15;
+    }
+
+    .excel-subtext {
+      color: #666;
+      font-size: 12px;
+    }
+
+    table.excel-table thead th {
+      background: #f3f3f3; /* Excel 表头浅灰 */
+      font-weight: 600;
+      text-align: left;
+    }
+
+    table.excel-table thead th.excel-colhdr,
+    table.excel-table thead th.excel-corner,
+    table.excel-table tbody td.excel-rowhdr {
+      background: #f3f3f3;
+      font-weight: 600;
+      color: #333;
+      text-align: center;
+      user-select: none;
+    }
+
+    table.excel-table thead th.excel-corner {
+      width: 34px;
+      min-width: 34px;
+    }
+
+    table.excel-table tbody td.excel-rowhdr {
+      width: 34px;
+      min-width: 34px;
+    }
+
+    table.excel-table td.text-end,
+    table.excel-table th.text-end {
+      text-align: right !important;
+    }
+
+    table.excel-table tbody tr:hover td {
+      background: #eef6ff; /* 悬浮行高亮 */
+    }
+  </style>
+
+  <div class="d-flex justify-content-between align-items-center">
+    <h2 class="mb-0 watchlist-page-title">自选列表</h2>
+    <div>
+      <a href="/" class="btn btn-sm btn-outline-secondary me-2" title="回到主页">
+        <i class="fas fa-home"></i>
+      </a>
+    </div>
+  </div>
+
+  <!-- stage6 4：添加自选 -->
+  <div class="mt-2 mb-2">
+    <div class="input-group input-group-sm" style="max-width: 520px;">
+      <input
+        type="text"
+        class="form-control"
+        id="wl_stock_code_input"
+        placeholder="输入股票代码（如 600000 / 600000.SH / 000001.SZ / 430047.BJ）"
+      />
+      <button type="button" class="btn btn-outline-primary" id="wl_add_btn" title="添加到自选">
+        <i class="fas fa-plus"></i>
+      </button>
+    </div>
+    <div class="form-text text-muted">添加后会“只加不删”，持仓里的股票也会默认进入。</div>
+    <div class="form-text mt-1" id="wlSyncHint"></div>
+  </div>
+
+  <div class="excel-wrap mt-3">
+    <table class="excel-table" id="watchlist-table">
+      <thead>
+        <tr>
+          <th class="excel-corner"></th>
+          <th class="excel-colhdr">A</th>
+          <th class="excel-colhdr">B</th>
+          <th class="excel-colhdr">C</th>
+          <th class="excel-colhdr">D</th>
+        </tr>
+        <tr>
+          <th class="excel-corner"></th>
+          <th>股票名称</th>
+          <th class="text-end">当日价格</th>
+          <th class="text-end">涨跌幅</th>
+          <th class="text-end">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if watchlist %}
+          {% for w in watchlist %}
+            <tr class="watchlist-row" data-stock-code="{{ w.stock_code or '' }}">
+              <td class="excel-rowhdr">{{ loop.index }}</td>
+              <td class="excel-multiline">
+                <div>{{ w.stock_name or '' }}</div>
+                <div class="excel-subtext">
+                  {{ w.stock_code or '' }}
+                </div>
+              </td>
+              <td class="text-end current-price-cell">
+                <span class="day-price">
+                  {% if w.current_price is not none %}
+                    {{ '%.2f'|format(w.current_price) }}
+                  {% else %}
+                    -
+                  {% endif %}
+                </span>
+              </td>
+              <td class="text-end">
+                <span class="day-pct">
+                  {% if w.change_pct is not none %}
+                    {{ '%.2f'|format(w.change_pct) }}%
+                  {% else %}
+                    -
+                  {% endif %}
+                </span>
+              </td>
+              <td class="text-end">
+                <button type="button" class="btn btn-sm btn-outline-primary edit-signal-btn"
+                        data-stock-code="{{ w.stock_code or '' }}"
+                        data-stock-name="{{ w.stock_name or '' }}">
+                  添加信号
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary ms-1 test-signal-btn"
+                        title="测试信号"
+                        data-stock-code="{{ w.stock_code or '' }}"
+                        data-stock-name="{{ w.stock_name or '' }}">
+                  <i class="fas fa-tools"></i>
+                </button>
+              </td>
+            </tr>
+          {% endfor %}
+        {% else %}
+          <tr>
+            <td class="excel-rowhdr">1</td>
+            <td colspan="4" class="text-center text-muted">暂无自选数据</td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="modal fade" id="watchlistSignalModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">信号编辑器（悬浮层）</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-2 text-muted" id="wlSignalTitle"></div>
+          <div class="border rounded p-2 mb-3 bg-light">
+            <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+              <span class="fw-bold">已添加的信号（点击一行加载下方配置）</span>
+              <button type="button" class="btn btn-sm btn-success" id="wlNewSignalBtn">新建信号</button>
+            </div>
+            <div class="table-responsive" style="max-height: 220px; overflow-y: auto;">
+              <table class="table table-sm table-bordered mb-0 align-middle">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>类型</th>
+                    <th>状态</th>
+                    <th>参数摘要</th>
+                  </tr>
+                </thead>
+                <tbody id="wlSignalListTbody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="small text-muted mb-2" id="wlFormModeHint"></div>
+          <input type="hidden" id="wlRuleId" value="">
+          <hr class="my-2">
+          <div class="row g-3">
+            <div class="col-md-4">
+              <label class="form-label">股票代码</label>
+              <input class="form-control" id="wlStockCode" value="" readonly>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">股票名称</label>
+              <input class="form-control" id="wlStockName" value="">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">群组 ID（逗号分隔）</label>
+              <input class="form-control" id="wlGroupIds" value="1">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">信号类型</label>
+              <select class="form-select" id="wlSignalType">
+                <option value="price_range">价格区间</option>
+                <option value="fibonacci_retrace">黄金分割回撤</option>
+              </select>
+            </div>
+            <div class="col-12" id="wlPriceRangeSection">
+              <div class="row g-3">
+                <div class="col-md-4">
+                  <label class="form-label">下限</label>
+                  <input type="number" step="0.001" class="form-control" id="wlLower" value="0">
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">上限</label>
+                  <input type="number" step="0.001" class="form-control" id="wlUpper" value="0">
+                </div>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">发送类型</label>
+              <select class="form-select" id="wlSendType">
+                <option value="on_trigger">触发即发送</option>
+                <option value="interval">间隔发送（预留）</option>
+              </select>
+            </div>
+            <div class="col-12" id="wlFibSection" style="display:none;">
+              <div class="row g-3">
+                <div class="col-md-4">
+                  <label class="form-label">最低点</label>
+                  <input type="number" step="0.001" class="form-control" id="wlFibLow" value="10.0">
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">最高点</label>
+                  <input type="number" step="0.001" class="form-control" id="wlFibHigh" value="12.0">
+                </div>
+                <div class="col-md-4 d-flex align-items-end">
+                  <button type="button" class="btn btn-outline-secondary w-100" id="wlCalcFibBtn">计算黄金分割档位</button>
+                </div>
+                <div class="col-12">
+                  <div class="small text-muted mb-1">自动计算档位（高点 - (高点-低点) * 比例）</div>
+                  <div class="border rounded p-2 bg-light" id="wlFibLevelsText">请先输入最低点和最高点</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-12" id="wlPriceRangeTemplateSection">
+              <label class="form-label">消息模板</label>
+              <textarea class="form-control" id="wlTemplate" rows="2">股票 {stock_code}({stock_name}) 触发{signal_type}信号，当前价格: {price:.3f}，触发边界: {boundary}，区间[{lower:.3f}, {upper:.3f}]，时间: {time}</textarea>
+            </div>
+            <div class="col-12" id="wlFibTemplateSection" style="display:none;">
+              <div class="small text-muted mb-2">黄金分割三类条件可分别设置消息（未填则使用规则主模板回退）。</div>
+              <label class="form-label">常规买点</label>
+              <textarea class="form-control mb-2" id="wlFibTplNormalBuy" rows="2"></textarea>
+              <label class="form-label">强支撑</label>
+              <textarea class="form-control mb-2" id="wlFibTplStrongSupport" rows="2"></textarea>
+              <label class="form-label">黄金坑</label>
+              <textarea class="form-control" id="wlFibTplGoldenPit" rows="2"></textarea>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button class="btn btn-primary" id="wlSaveSignalBtn">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const SIGNAL_TYPES = {
+      price_range: 'price_range',
+      fibonacci_retrace: 'fibonacci_retrace'
+    };
+    const DEFAULT_TEMPLATES = {
+      price_range: '股票 {stock_code}({stock_name}) 触发{signal_type}信号，当前价格: {price:.3f}，触发边界: {boundary}，区间[{lower:.3f}, {upper:.3f}]，时间: {time}',
+      fibonacci_retrace: '股票 {stock_code}({stock_name}) 触发{signal_type}，当前价格: {price:.3f}，区间[{fib_low:.3f}, {fib_high:.3f}]，档位(0.382/0.5/0.618): {level_382:.3f}/{level_500:.3f}/{level_618:.3f}，判定: {zone_label}，时间: {time}'
+    };
+    const DEFAULT_FIB_ZONE_TEMPLATES = {
+      normal_buy: '【常规买点】{stock_code}({stock_name}) 现价 {price:.3f}，区间[{fib_low:.3f},{fib_high:.3f}] 档位382/500/618: {level_382:.3f}/{level_500:.3f}/{level_618:.3f}，时间: {time}',
+      strong_support: '【强支撑】{stock_code}({stock_name}) 现价 {price:.3f}，区间[{fib_low:.3f},{fib_high:.3f}] 档位382/500/618: {level_382:.3f}/{level_500:.3f}/{level_618:.3f}，时间: {time}',
+      golden_pit: '【黄金坑】{stock_code}({stock_name}) 现价 {price:.3f}，区间[{fib_low:.3f},{fib_high:.3f}] 档位382/500/618: {level_382:.3f}/{level_500:.3f}/{level_618:.3f}，时间: {time}'
+    };
+
+    function normalizeForTencent(code) {
+      return (code || '').trim();
+    }
+
+    function setText(el, text) {
+      if (!el) return;
+      el.textContent = text;
+    }
+
+    function setColorByPct(el, pct) {
+      if (!el) return;
+      el.classList.remove('text-purple', 'text-yellow');
+      if (pct > 0) el.classList.add('text-purple');
+      else if (pct < 0) el.classList.add('text-yellow');
+    }
+
+    // 刷新当日价格/涨跌幅（复用持仓页的腾讯行情批量接口）
+    let refreshInFlight = false;
+    function refreshQuotesOnce() {
+      if (refreshInFlight) return;
+      const rows = Array.from(document.querySelectorAll('tr.watchlist-row'));
+      if (!rows.length) return;
+      refreshInFlight = true;
+
+      const codes = Array.from(
+        new Set(rows.map(r => r.getAttribute('data-stock-code')).filter(Boolean))
+      );
+      const payload = { codes: codes.map(normalizeForTencent) };
+
+      fetch('/api/quotes/tencent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+        .then(resp => resp.json())
+        .then(data => {
+          if (!data || !data.success) return;
+          const quotes = data.quotes || {};
+
+          rows.forEach(tr => {
+            const raw = tr.getAttribute('data-stock-code') || '';
+            const base = raw.split('.', 1)[0]; // 600000.SS -> 600000
+            const candidates = [
+              raw.toLowerCase(),
+              base,
+              ('sh' + base),
+              ('sz' + base),
+              ('bj' + base),
+              ('hk' + String(base).padStart(5, '0')),
+            ];
+
+            let q = null;
+            for (const k of Object.keys(quotes)) {
+              if (candidates.includes(k)) { q = quotes[k]; break; }
+            }
+            if (!q) {
+              for (const v of Object.values(quotes)) {
+                if (v && v.code && candidates.includes(String(v.code).toLowerCase())) {
+                  q = v; break;
+                }
+              }
+            }
+
+            const priceEl = tr.querySelector('.day-price');
+            const pctEl = tr.querySelector('.day-pct');
+
+            if (q && typeof q.now === 'number') {
+              const now = q.now;
+              const prev = typeof q.prev_close === 'number' ? q.prev_close : null;
+
+              setText(priceEl, now.toFixed(2));
+              if (prev != null && prev > 0) {
+                const pct = ((now - prev) / prev) * 100;
+                setText(pctEl, pct.toFixed(2) + '%');
+                setColorByPct(pctEl, pct);
+                setColorByPct(priceEl, pct);
+              } else {
+                setText(pctEl, '-');
+                setColorByPct(pctEl, 0);
+                setColorByPct(priceEl, 0);
+              }
+            } else {
+              setText(priceEl, '-');
+              setText(pctEl, '-');
+              setColorByPct(pctEl, 0);
+              setColorByPct(priceEl, 0);
+            }
+          });
+        })
+        .catch(() => {})
+        .finally(() => {
+          refreshInFlight = false;
+        });
+    }
+
+    // 自选：已登录用户写入数据库（跨设备）；未登录仍用 localStorage
+    const WATCHLIST_STORAGE_KEY = 'watchlist_items_v1';
+    let wlUseServerSync = false;
+
+    function setWlSyncHint() {
+      const el = document.getElementById('wlSyncHint');
+      if (!el) return;
+      if (wlUseServerSync) {
+        el.className = 'form-text mt-1 text-success';
+        el.textContent = '已登录：自选列表已保存到服务器，换设备登录同一账号即可同步。';
+      } else {
+        el.className = 'form-text mt-1 text-warning';
+        el.textContent = '未登录：自选仅保存在本机浏览器。请先在首页登录，再打开本页即可同步到数据库。';
+      }
+    }
+
+    /**
+     * @returns {Promise<{status:'ok', items: Array}|{status:'unauthorized'}|{status:'error'}>}
+     */
+    async function fetchWatchlistFromServer() {
+      try {
+        const resp = await fetch('/api/watchlist', { credentials: 'same-origin' });
+        let data = {};
+        try {
+          data = await resp.json();
+        } catch (e) {
+          data = {};
+        }
+        if (resp.status === 401) {
+          return { status: 'unauthorized' };
+        }
+        if (resp.ok && data.success && Array.isArray(data.items)) {
+          const items = data.items
+            .map((i) => ({
+              stock_code: String(i?.stock_code || '').trim(),
+              stock_name: String(i?.stock_name || '').trim(),
+            }))
+            .filter((i) => i.stock_code);
+          return { status: 'ok', items };
+        }
+        return { status: 'error' };
+      } catch (e) {
+        return { status: 'error' };
+      }
+    }
+
+    async function persistWatchlistItems(items) {
+      if (wlUseServerSync) {
+        try {
+          const resp = await fetch('/api/watchlist', {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: items || [] }),
+          });
+          const data = await resp.json();
+          if (!data.success) {
+            console.warn('自选同步到服务器失败', data);
+          }
+        } catch (e) {
+          console.warn('自选同步到服务器异常', e);
+        }
+      } else {
+        saveWatchlistItems(items);
+      }
+    }
+
+    async function getWatchlistItemsForEdit() {
+      if (!wlUseServerSync) {
+        return loadWatchlistItems();
+      }
+      const res = await fetchWatchlistFromServer();
+      if (res.status === 'ok') {
+        return res.items;
+      }
+      if (res.status === 'unauthorized') {
+        wlUseServerSync = false;
+        setWlSyncHint();
+        return loadWatchlistItems();
+      }
+      // 服务器异常时退回本地缓存，避免清空列表
+      return loadWatchlistItems();
+    }
+
+    function escapeHtml(str) {
+      return String(str || '').replace(/[&<>"']/g, (c) => {
+        switch (c) {
+          case '&': return '&amp;';
+          case '<': return '&lt;';
+          case '>': return '&gt;';
+          case '"': return '&quot;';
+          case "'": return '&#39;';
+          default: return c;
+        }
+      });
+    }
+
+    function loadWatchlistItems() {
+      try {
+        const raw = localStorage.getItem(WATCHLIST_STORAGE_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return [];
+        return arr
+          .map(i => ({
+            stock_code: String(i?.stock_code || '').trim(),
+            stock_name: String(i?.stock_name || '').trim(),
+          }))
+          .filter(i => i.stock_code);
+      } catch (e) {
+        return [];
+      }
+    }
+
+    function saveWatchlistItems(items) {
+      try {
+        localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(items || []));
+      } catch (e) {
+        // 忽略：无写入权限时仍可正常显示
+      }
+    }
+
+    function normalizeBasicKey(code) {
+      // 用于“只加不删”的去重匹配：把 600000.SS/SH 等都视为同一基本代码 600000
+      const c = String(code || '').trim();
+      if (!c) return '';
+      return c.split('.', 1)[0].trim();
+    }
+
+    /** 服务器列表优先，再把本机 localStorage 中多出的代码合并进来（首次登录迁移） */
+    function mergeWatchlistPreferServer(serverList, localList) {
+      const seen = new Set();
+      const out = [];
+      (serverList || []).forEach((it) => {
+        const sc = String(it?.stock_code || '').trim();
+        const k = normalizeBasicKey(sc);
+        if (!k || seen.has(k)) return;
+        seen.add(k);
+        out.push({ stock_code: sc, stock_name: String(it?.stock_name || '').trim() });
+      });
+      (localList || []).forEach((it) => {
+        const sc = String(it?.stock_code || '').trim();
+        const k = normalizeBasicKey(sc);
+        if (!k || seen.has(k)) return;
+        seen.add(k);
+        out.push({ stock_code: sc, stock_name: String(it?.stock_name || '').trim() });
+      });
+      return out;
+    }
+
+    function upsertItemsFromPositions(items, positions) {
+      const existingByBasicKey = new Map();
+      (items || []).forEach(it => {
+        const sc = String(it?.stock_code || '').trim();
+        if (!sc) return;
+        const key = normalizeBasicKey(sc);
+        if (!key) return;
+        existingByBasicKey.set(key, { ...it, stock_code: sc });
+      });
+
+      // 持仓项优先：如果同一 basic key 已存在（可能格式不同），用持仓 stock_code 版本
+      (positions || []).forEach(p => {
+        const sc = String(p?.stock_code || '').trim();
+        if (!sc) return;
+        const sn = String(p?.stock_name || '').trim();
+        const key = normalizeBasicKey(sc);
+        if (!key) return;
+
+        if (existingByBasicKey.has(key)) {
+          const cur = existingByBasicKey.get(key);
+          existingByBasicKey.set(key, {
+            stock_code: cur.stock_code || sc,
+            stock_name: (sn || cur.stock_name || ''),
+          });
+        } else {
+          existingByBasicKey.set(key, { stock_code: sc, stock_name: sn });
+        }
+      });
+
+      // 保序：先保留原 items 的顺序（按 basic key 去重），然后按 positions 顺序追加新项
+      const out = [];
+      const seen = new Set();
+
+      (items || []).forEach(it => {
+        const sc = String(it?.stock_code || '').trim();
+        if (!sc) return;
+        const key = normalizeBasicKey(sc);
+        if (!key || seen.has(key)) return;
+        if (existingByBasicKey.has(key)) {
+          out.push(existingByBasicKey.get(key));
+          seen.add(key);
+        }
+      });
+
+      (positions || []).forEach(p => {
+        const sc = String(p?.stock_code || '').trim();
+        if (!sc) return;
+        const key = normalizeBasicKey(sc);
+        if (!key || seen.has(key)) return;
+        if (existingByBasicKey.has(key)) {
+          out.push(existingByBasicKey.get(key));
+          seen.add(key);
+        }
+      });
+
+      return out;
+    }
+
+    function renderWatchlistItems(items) {
+      const tbody = document.querySelector('#watchlist-table tbody');
+      if (!tbody) return;
+      tbody.innerHTML = '';
+
+      if (!items || !items.length) {
+        tbody.innerHTML = `
+          <tr>
+            <td class="excel-rowhdr">1</td>
+            <td colspan="3" class="text-center text-muted">暂无自选数据</td>
+          </tr>
+        `;
+        return;
+      }
+
+      const frag = document.createDocumentFragment();
+      items.forEach((it, idx) => {
+        const tr = document.createElement('tr');
+        tr.className = 'watchlist-row';
+        tr.setAttribute('data-stock-code', it.stock_code || '');
+        tr.innerHTML = `
+          <td class="excel-rowhdr">${idx + 1}</td>
+          <td class="excel-multiline">
+            <div>${escapeHtml(it.stock_name || '')}</div>
+            <div class="excel-subtext">${escapeHtml(it.stock_code || '')}</div>
+          </td>
+          <td class="text-end current-price-cell"><span class="day-price">-</span></td>
+          <td class="text-end"><span class="day-pct">-</span></td>
+          <td class="text-end">
+            <button type="button" class="btn btn-sm btn-outline-primary edit-signal-btn"
+                    data-stock-code="${escapeHtml(it.stock_code || '')}"
+                    data-stock-name="${escapeHtml(it.stock_name || '')}">
+              添加信号
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary ms-1 test-signal-btn"
+                    title="测试信号"
+                    data-stock-code="${escapeHtml(it.stock_code || '')}"
+                    data-stock-name="${escapeHtml(it.stock_name || '')}">
+              <i class="fas fa-tools"></i>
+            </button>
+          </td>
+        `;
+        frag.appendChild(tr);
+      });
+      tbody.appendChild(frag);
+      bindEditSignalButtons();
+      bindTestSignalButtons();
+    }
+
+    function parseGroupIds(raw) {
+      return String(raw || '').split(',').map(x => x.trim()).filter(Boolean).map(x => Number(x));
+    }
+
+    function getWlSignalType() {
+      return document.getElementById('wlSignalType').value;
+    }
+
+    function renderWlSignalTypeFields() {
+      const isFib = getWlSignalType() === SIGNAL_TYPES.fibonacci_retrace;
+      const fibSection = document.getElementById('wlFibSection');
+      const priceRangeSection = document.getElementById('wlPriceRangeSection');
+      const priceRangeTemplateSection = document.getElementById('wlPriceRangeTemplateSection');
+      const fibTemplateSection = document.getElementById('wlFibTemplateSection');
+      fibSection.style.display = isFib ? '' : 'none';
+      priceRangeSection.style.display = isFib ? 'none' : '';
+      priceRangeTemplateSection.style.display = isFib ? 'none' : '';
+      fibTemplateSection.style.display = isFib ? '' : 'none';
+    }
+
+    function calcWlFibLevels() {
+      const low = Number(document.getElementById('wlFibLow').value);
+      const high = Number(document.getElementById('wlFibHigh').value);
+      const container = document.getElementById('wlFibLevelsText');
+      if (!Number.isFinite(low) || !Number.isFinite(high)) {
+        container.textContent = '请输入有效数值';
+        return null;
+      }
+      if (low >= high) {
+        container.textContent = '参数错误：最低点必须小于最高点';
+        return null;
+      }
+      const diff = high - low;
+      const l382 = high - diff * 0.382;
+      const l500 = high - diff * 0.5;
+      const l618 = high - diff * 0.618;
+      container.textContent = `0.382: ${l382.toFixed(3)} | 0.5: ${l500.toFixed(3)} | 0.618: ${l618.toFixed(3)}`;
+      return { low, high };
+    }
+
+    function fillWlDefaultFibZoneTemplatesIfNeeded() {
+      const ids = ['wlFibTplNormalBuy', 'wlFibTplStrongSupport', 'wlFibTplGoldenPit'];
+      const keys = ['normal_buy', 'strong_support', 'golden_pit'];
+      let any = false;
+      ids.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el && (el.value || '').trim()) any = true;
+      });
+      if (any) return;
+      ids.forEach((id, i) => {
+        const el = document.getElementById(id);
+        if (el) el.value = DEFAULT_FIB_ZONE_TEMPLATES[keys[i]] || '';
+      });
+    }
+
+    function syncWlTemplateByType() {
+      const type = getWlSignalType();
+      if (type === SIGNAL_TYPES.fibonacci_retrace) {
+        fillWlDefaultFibZoneTemplatesIfNeeded();
+        return;
+      }
+      const textarea = document.getElementById('wlTemplate');
+      const current = (textarea.value || '').trim();
+      const allDefaults = Object.values(DEFAULT_TEMPLATES);
+      if (!current || allDefaults.includes(current)) {
+        textarea.value = DEFAULT_TEMPLATES.price_range;
+      }
+    }
+
+    function pickWlFibMessageTemplateForDb() {
+      const a = (document.getElementById('wlFibTplNormalBuy')?.value || '').trim();
+      const b = (document.getElementById('wlFibTplStrongSupport')?.value || '').trim();
+      const c = (document.getElementById('wlFibTplGoldenPit')?.value || '').trim();
+      return a || b || c || DEFAULT_TEMPLATES.fibonacci_retrace;
+    }
+
+    let watchlistSignalModal = null;
+    let currentSignalStockCode = '';
+    let currentSignalStockName = '';
+    let wlSignalsCache = [];
+
+    function formatWlRuleSummary(row) {
+      const p = row.params || {};
+      if ((row.signal_type || '') === SIGNAL_TYPES.fibonacci_retrace) {
+        const lo = p.low;
+        const hi = p.high;
+        return `Fib 低=${lo != null ? lo : '-'} 高=${hi != null ? hi : '-'}`;
+      }
+      return `区间 ${p.lower != null ? p.lower : '-'} ~ ${p.upper != null ? p.upper : '-'}`;
+    }
+
+    function updateWlFormModeHint() {
+      const hint = document.getElementById('wlFormModeHint');
+      const id = (document.getElementById('wlRuleId').value || '').trim();
+      if (!hint) return;
+      hint.textContent = id
+        ? `下方为规则 #${id} 的配置，修改后点保存。`
+        : '下方为新建信号，填写后保存将新增一条规则。';
+    }
+
+    function updateWlSaveButtonLabel() {
+      const btn = document.getElementById('wlSaveSignalBtn');
+      if (!btn) return;
+      const id = (document.getElementById('wlRuleId').value || '').trim();
+      btn.textContent = id ? '保存修改' : '保存（新建）';
+    }
+
+    /** 编辑已有规则时禁止改类型（后端 PUT 不更新 signal_type）；新建时可自由选择 */
+    function setWlSignalTypeEditable(isNew) {
+      const sel = document.getElementById('wlSignalType');
+      if (sel) sel.disabled = !isNew;
+    }
+
+    function renderWlSignalList() {
+      const tbody = document.getElementById('wlSignalListTbody');
+      if (!tbody) return;
+      tbody.innerHTML = '';
+      const selectedId = (document.getElementById('wlRuleId').value || '').trim();
+      if (!wlSignalsCache.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 4;
+        td.className = 'text-muted text-center py-2';
+        td.textContent = '暂无信号，点击右上角「新建信号」添加';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        return;
+      }
+      wlSignalsCache.forEach((row) => {
+        const tr = document.createElement('tr');
+        tr.style.cursor = 'pointer';
+        const idStr = String(row.id);
+        if (selectedId && idStr === selectedId) {
+          tr.classList.add('table-active');
+        }
+        tr.addEventListener('click', () => selectWlSignalById(row.id));
+
+        const tdId = document.createElement('td');
+        tdId.textContent = idStr;
+        const tdType = document.createElement('td');
+        tdType.textContent = String(row.signal_type || '');
+        const tdAct = document.createElement('td');
+        tdAct.textContent = Number(row.is_active) === 1 ? '启用' : '停用';
+        const tdSum = document.createElement('td');
+        tdSum.textContent = formatWlRuleSummary(row);
+
+        tr.appendChild(tdId);
+        tr.appendChild(tdType);
+        tr.appendChild(tdAct);
+        tr.appendChild(tdSum);
+        tbody.appendChild(tr);
+      });
+    }
+
+    function applyWlRuleToForm(row) {
+      document.getElementById('wlGroupIds').value = (row.group_ids || []).join(',');
+      document.getElementById('wlSignalType').value = row.signal_type || SIGNAL_TYPES.price_range;
+      if ((row.signal_type || '') === SIGNAL_TYPES.fibonacci_retrace) {
+        document.getElementById('wlFibLow').value = Number(row.params?.low || 0);
+        document.getElementById('wlFibHigh').value = Number(row.params?.high || 0);
+        calcWlFibLevels();
+        const t = (row.params || {}).templates || {};
+        document.getElementById('wlFibTplNormalBuy').value =
+          (t.normal_buy != null && String(t.normal_buy).trim() !== '') ? t.normal_buy : DEFAULT_FIB_ZONE_TEMPLATES.normal_buy;
+        document.getElementById('wlFibTplStrongSupport').value =
+          (t.strong_support != null && String(t.strong_support).trim() !== '') ? t.strong_support : DEFAULT_FIB_ZONE_TEMPLATES.strong_support;
+        document.getElementById('wlFibTplGoldenPit').value =
+          (t.golden_pit != null && String(t.golden_pit).trim() !== '') ? t.golden_pit : DEFAULT_FIB_ZONE_TEMPLATES.golden_pit;
+      } else {
+        document.getElementById('wlLower').value = Number(row.params?.lower || 0);
+        document.getElementById('wlUpper').value = Number(row.params?.upper || 0);
+      }
+      document.getElementById('wlSendType').value = row.send_type || 'on_trigger';
+      if ((row.signal_type || '') !== SIGNAL_TYPES.fibonacci_retrace) {
+        document.getElementById('wlTemplate').value = row.message_template || DEFAULT_TEMPLATES.price_range;
+      }
+      renderWlSignalTypeFields();
+      calcWlFibLevels();
+    }
+
+    function resetWlFormToDefaults() {
+      document.getElementById('wlGroupIds').value = '1';
+      document.getElementById('wlSignalType').value = SIGNAL_TYPES.price_range;
+      document.getElementById('wlLower').value = '0';
+      document.getElementById('wlUpper').value = '0';
+      document.getElementById('wlFibLow').value = '10';
+      document.getElementById('wlFibHigh').value = '12';
+      document.getElementById('wlSendType').value = 'on_trigger';
+      document.getElementById('wlFibTplNormalBuy').value = DEFAULT_FIB_ZONE_TEMPLATES.normal_buy;
+      document.getElementById('wlFibTplStrongSupport').value = DEFAULT_FIB_ZONE_TEMPLATES.strong_support;
+      document.getElementById('wlFibTplGoldenPit').value = DEFAULT_FIB_ZONE_TEMPLATES.golden_pit;
+      document.getElementById('wlTemplate').value = DEFAULT_TEMPLATES.price_range;
+      renderWlSignalTypeFields();
+      syncWlTemplateByType();
+      calcWlFibLevels();
+    }
+
+    function selectWlSignalById(ruleId) {
+      document.getElementById('wlRuleId').value = String(ruleId);
+      const row = wlSignalsCache.find((r) => Number(r.id) === Number(ruleId));
+      if (!row) return;
+      applyWlRuleToForm(row);
+      setWlSignalTypeEditable(false);
+      renderWlSignalList();
+      updateWlFormModeHint();
+      updateWlSaveButtonLabel();
+    }
+
+    function enterWlNewSignalMode() {
+      document.getElementById('wlRuleId').value = '';
+      resetWlFormToDefaults();
+      setWlSignalTypeEditable(true);
+      renderWlSignalList();
+      updateWlFormModeHint();
+      updateWlSaveButtonLabel();
+    }
+
+    async function reloadWlSignalsForStock(preferRuleId) {
+      const code = document.getElementById('wlStockCode').value.trim();
+      const url = '/api/signal_notify/signals?stock_code=' + encodeURIComponent(code) + '&only_active=false';
+      const resp = await fetch(url);
+      const data = await resp.json();
+      wlSignalsCache = (data && data.success && Array.isArray(data.signals)) ? data.signals : [];
+      renderWlSignalList();
+      let want = preferRuleId != null && preferRuleId !== '' ? Number(preferRuleId) : null;
+      if (want != null && Number.isNaN(want)) want = null;
+      if (want != null && !Number.isNaN(want) && wlSignalsCache.some((r) => Number(r.id) === want)) {
+        selectWlSignalById(want);
+      } else if (wlSignalsCache.length) {
+        selectWlSignalById(wlSignalsCache[0].id);
+      } else {
+        document.getElementById('wlRuleId').value = '';
+        resetWlFormToDefaults();
+        setWlSignalTypeEditable(true);
+        renderWlSignalList();
+        updateWlFormModeHint();
+        updateWlSaveButtonLabel();
+      }
+    }
+
+    async function openSignalEditor(stockCode, stockName) {
+      currentSignalStockCode = String(stockCode || '').trim();
+      currentSignalStockName = String(stockName || '').trim();
+      document.getElementById('wlStockCode').value = currentSignalStockCode;
+      document.getElementById('wlStockName').value = currentSignalStockName;
+      document.getElementById('wlSignalTitle').textContent =
+        `当前股票：${currentSignalStockCode} ${currentSignalStockName}`.trim();
+      await reloadWlSignalsForStock(null);
+      watchlistSignalModal.show();
+    }
+
+    function bindEditSignalButtons() {
+      document.querySelectorAll('.edit-signal-btn').forEach(btn => {
+        btn.onclick = () => openSignalEditor(btn.getAttribute('data-stock-code'), btn.getAttribute('data-stock-name'));
+      });
+    }
+
+    async function testSignal(stockCode, stockName) {
+      const code = String(stockCode || '').trim();
+      if (!code) return;
+      const resp = await fetch('/api/signal_notify/test_trigger_realtime', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ stock_code: code }),
+      });
+      const data = await resp.json();
+      if (data && data.success) {
+        alert(`测试完成，实时价 ${Number(data.price || 0).toFixed(3)}，触发 ${data.triggered || 0} 条信号`);
+      } else {
+        alert((data && data.message) || '测试失败');
+      }
+    }
+
+    function bindTestSignalButtons() {
+      document.querySelectorAll('.test-signal-btn').forEach(btn => {
+        btn.onclick = () => testSignal(btn.getAttribute('data-stock-code'), btn.getAttribute('data-stock-name'));
+      });
+    }
+
+    async function initWatchlistItems() {
+      let items = [];
+      const res = await fetchWatchlistFromServer();
+      if (res.status === 'ok') {
+        wlUseServerSync = true;
+        items = mergeWatchlistPreferServer(res.items, loadWatchlistItems());
+      } else {
+        wlUseServerSync = false;
+        items = loadWatchlistItems();
+      }
+      setWlSyncHint();
+
+      // 拉取当前持仓，把持仓股票“加到”自选缓存（不删除历史项）
+      try {
+        const resp = await fetch('/api/positions/simple', { credentials: 'same-origin' });
+        const data = await resp.json();
+        if (data && data.success && Array.isArray(data.positions)) {
+          items = upsertItemsFromPositions(items, data.positions);
+        }
+      } catch (e) {
+        // 忽略：无网络/接口失败时仍显示缓存内容
+      }
+
+      await persistWatchlistItems(items);
+      renderWatchlistItems(items);
+      refreshQuotesOnce();
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      watchlistSignalModal = new bootstrap.Modal(document.getElementById('watchlistSignalModal'));
+      initWatchlistItems().finally(() => {
+        // 阶段六 5：交易时间内每 3 秒刷新；非交易时间只刷新一次（打开页面时已完成初次刷新）
+        function inTradingHours() {
+          const now = new Date();
+          const h = now.getHours();
+          return h >= 9 && h <= 15;
+        }
+
+        if (inTradingHours()) {
+          const timer = setInterval(() => refreshQuotesOnce(), 3000);
+          window.addEventListener('beforeunload', () => clearInterval(timer));
+        }
+      });
+
+      const inputEl = document.getElementById('wl_stock_code_input');
+      const addBtn = document.getElementById('wl_add_btn');
+
+      async function addOneToWatchlist(stockCodeRaw) {
+        const codeRaw = String(stockCodeRaw || '').trim();
+        if (!codeRaw) return;
+
+        const basicCode = normalizeBasicKey(codeRaw);
+        if (!basicCode) return;
+
+        let items = await getWatchlistItemsForEdit();
+        const existingByBasicKey = new Map();
+        (items || []).forEach(it => {
+          const sc = String(it?.stock_code || '').trim();
+          const key = normalizeBasicKey(sc);
+          if (sc && key && !existingByBasicKey.has(key)) existingByBasicKey.set(key, it);
+        });
+
+        // 若已存在同 basic key，则只补名称（如缺失），不追加新行
+        if (existingByBasicKey.has(basicCode)) {
+          const exist = existingByBasicKey.get(basicCode);
+          if (exist && (!exist.stock_name || exist.stock_name === '')) {
+            try {
+              const resp = await fetch('/api/stock_basic/' + encodeURIComponent(basicCode));
+              const data = await resp.json();
+              if (data && data.success && data.found && data.data && data.data.name) {
+                exist.stock_name = data.data.name;
+              }
+            } catch (e) {}
+          }
+          await persistWatchlistItems(items);
+          renderWatchlistItems(items);
+          refreshQuotesOnce();
+          return;
+        }
+
+        // 新增：先尝试回填股票名称（来自 stock_basic）
+        let stockName = '';
+        try {
+          const resp = await fetch('/api/stock_basic/' + encodeURIComponent(basicCode));
+          const data = await resp.json();
+          if (data && data.success && data.found && data.data && data.data.name) {
+            stockName = data.data.name || '';
+          }
+        } catch (e) {}
+
+        const nextItems = items || [];
+        nextItems.push({ stock_code: codeRaw, stock_name: stockName });
+        await persistWatchlistItems(nextItems);
+
+        renderWatchlistItems(nextItems);
+        refreshQuotesOnce();
+      }
+
+      if (addBtn) {
+        addBtn.addEventListener('click', () => addOneToWatchlist(inputEl?.value));
+      }
+      if (inputEl) {
+        inputEl.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            addOneToWatchlist(inputEl.value);
+          }
+        });
+      }
+      bindEditSignalButtons();
+      bindTestSignalButtons();
+
+      document.getElementById('wlNewSignalBtn')?.addEventListener('click', () => enterWlNewSignalMode());
+
+      const saveBtn = document.getElementById('wlSaveSignalBtn');
+      if (saveBtn) {
+        saveBtn.addEventListener('click', async () => {
+          const existingRuleId = (document.getElementById('wlRuleId').value || '').trim();
+          const signalType = getWlSignalType();
+          let params = {};
+          let messageTemplate = document.getElementById('wlTemplate').value;
+          if (signalType === SIGNAL_TYPES.fibonacci_retrace) {
+            const fib = calcWlFibLevels();
+            if (!fib) {
+              alert('黄金分割参数不合法');
+              return;
+            }
+            params = {
+              low: fib.low,
+              high: fib.high,
+              templates: {
+                normal_buy: (document.getElementById('wlFibTplNormalBuy').value || '').trim(),
+                strong_support: (document.getElementById('wlFibTplStrongSupport').value || '').trim(),
+                golden_pit: (document.getElementById('wlFibTplGoldenPit').value || '').trim()
+              }
+            };
+            messageTemplate = pickWlFibMessageTemplateForDb();
+          } else {
+            params = {
+              lower: Number(document.getElementById('wlLower').value),
+              upper: Number(document.getElementById('wlUpper').value),
+            };
+          }
+          const payload = {
+            stock_code: document.getElementById('wlStockCode').value.trim(),
+            stock_name: document.getElementById('wlStockName').value.trim(),
+            group_ids: parseGroupIds(document.getElementById('wlGroupIds').value),
+            signal_type: signalType,
+            params: params,
+            send_type: document.getElementById('wlSendType').value,
+            message_template: messageTemplate,
+          };
+          const url = existingRuleId ? `/api/signal_notify/signals/${existingRuleId}` : '/api/signal_notify/signals';
+          const method = existingRuleId ? 'PUT' : 'POST';
+          const resp = await fetch(url, {
+            method,
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+          });
+          const data = await resp.json();
+          if (data && data.success) {
+            const selId = existingRuleId ? Number(existingRuleId) : Number(data.id);
+            await reloadWlSignalsForStock(selId);
+          } else {
+            alert((data && data.message) || '保存失败');
+          }
+        });
+      }
+      document.getElementById('wlSignalType')?.addEventListener('change', () => {
+        renderWlSignalTypeFields();
+        syncWlTemplateByType();
+      });
+      document.getElementById('wlCalcFibBtn')?.addEventListener('click', calcWlFibLevels);
+      document.getElementById('wlFibLow')?.addEventListener('input', calcWlFibLevels);
+      document.getElementById('wlFibHigh')?.addEventListener('input', calcWlFibLevels);
+      renderWlSignalTypeFields();
+      syncWlTemplateByType();
+      calcWlFibLevels();
+    });
+  </script>
+</div>
+{% endblock %}
+

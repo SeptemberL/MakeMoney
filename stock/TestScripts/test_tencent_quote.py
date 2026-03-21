@@ -10,7 +10,8 @@ from stocks.stock_quote_tencent import fetch_quotes
 
 
 def main():
-    quotes = fetch_quotes(["300308", "588170", "9992", "000001.SZ", "600000.SH"])
+    # A股：sh/sz；港股：hk；北交所：bj
+    quotes = fetch_quotes(["300308", "588170", "9992", "000001.SZ", "600000.SH", "430047", "430047.SS", "920809", "920809.SS"])
     for k, q in quotes.items():
         print(
             k,
