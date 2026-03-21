@@ -41,6 +41,7 @@ from signals.signal_notify_system import (
     SignalMessageTemplate,
     SingleManager,
     SingleType,
+    validate_signal_rule_payload,
 )
 import csv
 import tempfile
@@ -82,6 +83,13 @@ logger = logging.getLogger(__name__)
 # 全局变量
 sendAllMessage = ""
 config = Config()
+
+
+def _test_trigger_runtime_state(signal_type: SingleType) -> dict:
+    """测试触发时不读库；到价提醒用空状态以便当次条件满足即可发一条。"""
+    if signal_type == SingleType.PRICE_LEVEL_INTERVAL:
+        return {}
+    return {"sent_lower": False, "sent_upper": False, "last_notified_date": ""}
 
 
 def _send_signal_to_group(group_id: int, message: str):
@@ -337,6 +345,39 @@ def signal_notify_update(rule_id: int):
 
         db = Database.Create()
         try:
+            row = db.fetch_one(
+                'SELECT signal_type, params_json, message_template, send_type, send_interval_seconds '
+                'FROM signal_rule WHERE id = %s',
+                (int(rule_id),),
+            )
+            if not row:
+                return jsonify({'success': False, 'message': '规则不存在'}), 404
+
+            merged_params = json.loads(row.get('params_json') or '{}')
+            if params is not None:
+                merged_params = dict(params)
+            merged_msg = (
+                message_template
+                if message_template is not None
+                else (row.get('message_template') or '')
+            )
+            merged_send_type = send_type if send_type is not None else row.get('send_type')
+            merged_interval = (
+                send_interval_seconds
+                if send_interval_seconds is not None
+                else row.get('send_interval_seconds')
+            )
+            try:
+                validate_signal_rule_payload(
+                    signal_type=SingleType(row.get('signal_type') or SingleType.PRICE_RANGE.value),
+                    params=merged_params,
+                    send_type=SendType(merged_send_type or SendType.ON_TRIGGER.value),
+                    send_interval_seconds=int(merged_interval or 0),
+                    message_template=merged_msg,
+                )
+            except ValueError as ve:
+                return jsonify({'success': False, 'message': str(ve)}), 400
+
             db.update_signal_rule(
                 rule_id=rule_id,
                 stock_name=stock_name,
@@ -406,19 +447,20 @@ def signal_notify_test_trigger():
         messages = []
         for r in rows or []:
             try:
+                st = SingleType(r.get('signal_type') or SingleType.PRICE_RANGE.value)
                 signal = create_signal_instance(
                     SignalConfig(
                         stock_code=r.get('stock_code') or '',
                         stock_name=r.get('stock_name') or '',
                         group_ids=json.loads(r.get('group_ids_json') or '[]'),
-                        signal_type=SingleType(r.get('signal_type') or SingleType.PRICE_RANGE.value),
+                        signal_type=st,
                         params=json.loads(r.get('params_json') or '{}'),
                         message_template=SignalMessageTemplate(
                             template=r.get('message_template') or SignalMessageTemplate().template
                         ),
                         send_type=SendType(r.get('send_type') or SendType.ON_TRIGGER.value),
                         send_interval_seconds=int(r.get('send_interval_seconds') or 0),
-                        runtime_state={"sent_lower": False, "sent_upper": False, "last_notified_date": ""},
+                        runtime_state=_test_trigger_runtime_state(st),
                     )
                 )
                 new_messages = signal.update(price)
@@ -473,19 +515,20 @@ def signal_notify_test_trigger_realtime():
         messages = []
         for r in rows or []:
             try:
+                st = SingleType(r.get('signal_type') or SingleType.PRICE_RANGE.value)
                 signal = create_signal_instance(
                     SignalConfig(
                         stock_code=r.get('stock_code') or '',
                         stock_name=r.get('stock_name') or '',
                         group_ids=json.loads(r.get('group_ids_json') or '[]'),
-                        signal_type=SingleType(r.get('signal_type') or SingleType.PRICE_RANGE.value),
+                        signal_type=st,
                         params=json.loads(r.get('params_json') or '{}'),
                         message_template=SignalMessageTemplate(
                             template=r.get('message_template') or SignalMessageTemplate().template
                         ),
                         send_type=SendType(r.get('send_type') or SendType.ON_TRIGGER.value),
                         send_interval_seconds=int(r.get('send_interval_seconds') or 0),
-                        runtime_state={"sent_lower": False, "sent_upper": False, "last_notified_date": ""},
+                        runtime_state=_test_trigger_runtime_state(st),
                     )
                 )
                 new_messages = signal.update(price)

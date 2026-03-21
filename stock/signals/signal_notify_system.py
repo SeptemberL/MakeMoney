@@ -4,10 +4,12 @@
 - 预留 UI 接口定义（用于悬浮页面配置）
 - 信号系统基础框架（股票、群组、信号参数、模板、发送类型）
 - 基础信号：股价区间上下限触发（上限一次、下限一次）
+- 到价提醒（price_level_interval）：到达目标价条件后按固定秒数节流重复提醒
 """
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -15,9 +17,14 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
 
+# 到价提醒（price_level_interval）最小发送间隔（秒），与规格一致
+PRICE_LEVEL_INTERVAL_MIN_SECONDS = 60
+
+
 class SingleType(str, Enum):
     PRICE_RANGE = "price_range"
     FIBONACCI_RETRACE = "fibonacci_retrace"
+    PRICE_LEVEL_INTERVAL = "price_level_interval"
 
 
 class SendType(str, Enum):
@@ -48,6 +55,9 @@ class SignalMessageTemplate:
         safe_payload.setdefault("level_382", 0.0)
         safe_payload.setdefault("level_500", 0.0)
         safe_payload.setdefault("level_618", 0.0)
+        safe_payload.setdefault("target_price", 0.0)
+        safe_payload.setdefault("mode", "")
+        safe_payload.setdefault("mode_label", "")
         safe_payload.setdefault("time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         return self.template.format(**safe_payload)
 
@@ -227,12 +237,140 @@ class FibonacciRetraceSignal(SingleBase):
         }
 
 
+class PriceLevelIntervalSignal(SingleBase):
+    """
+    到价提醒（price_level_interval）：达到目标价条件且条件持续成立时，按 send_interval_seconds 节流发送消息。
+    params: target_price, mode in (at_or_above, at_or_below)
+    须 send_type=INTERVAL 且间隔 >= PRICE_LEVEL_INTERVAL_MIN_SECONDS。
+    """
+
+    MODES = ("at_or_above", "at_or_below")
+
+    def init(self) -> None:
+        params = self.config.params or {}
+        raw_target = params.get("target_price")
+        try:
+            self.target_price = float(raw_target)
+        except (TypeError, ValueError):
+            raise ValueError("参数错误：target_price 必须为数值")
+        if not math.isfinite(self.target_price):
+            raise ValueError("参数错误：target_price 必须为有限数值")
+
+        self.mode = str(params.get("mode") or "").strip()
+        if self.mode not in self.MODES:
+            raise ValueError(f"参数错误：mode 必须为 {self.MODES}")
+
+        if self.config.send_type != SendType.INTERVAL:
+            raise ValueError("到价提醒必须使用 send_type=interval（间隔发送）")
+
+        self.interval_sec = int(self.config.send_interval_seconds or 0)
+        if self.interval_sec < PRICE_LEVEL_INTERVAL_MIN_SECONDS:
+            raise ValueError(
+                f"参数错误：send_interval_seconds 须为不小于 {PRICE_LEVEL_INTERVAL_MIN_SECONDS} 的整数"
+            )
+
+        state = self.config.runtime_state or {}
+        self.last_sent_at = None
+        raw_ls = str(state.get("last_sent_at") or "").strip()
+        if raw_ls:
+            try:
+                self.last_sent_at = datetime.fromisoformat(raw_ls.replace("Z", "+00:00"))
+            except ValueError:
+                self.last_sent_at = None
+
+        lp = state.get("last_price")
+        if lp is None or lp == "":
+            self.last_price: Optional[float] = None
+        else:
+            try:
+                self.last_price = float(lp)
+            except (TypeError, ValueError):
+                self.last_price = None
+
+    def _condition(self, price: float) -> bool:
+        if self.mode == "at_or_above":
+            return price >= self.target_price
+        return price <= self.target_price
+
+    def trigger(self, price: float) -> List[Dict[str, Any]]:
+        if self._condition(price):
+            return [{"price": price}]
+        return []
+
+    def update(self, price: float, now: Optional[datetime] = None) -> List[str]:
+        now = now or datetime.now()
+        messages: List[str] = []
+        self.last_price = price
+        if not self._condition(price):
+            return messages
+
+        elapsed_ok = self.last_sent_at is None or (now - self.last_sent_at).total_seconds() >= float(
+            self.interval_sec
+        )
+        if not elapsed_ok:
+            return messages
+
+        mode_label = "高于等于目标价" if self.mode == "at_or_above" else "低于等于目标价"
+        payload = {
+            "stock_code": self.config.stock_code,
+            "stock_name": self.config.stock_name,
+            "price": price,
+            "signal_type": self.config.signal_type.value,
+            "boundary": self.mode,
+            "lower": self.target_price,
+            "upper": self.target_price,
+            "target_price": self.target_price,
+            "mode": self.mode,
+            "mode_label": mode_label,
+            "time": now.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        messages.append(self.config.message_template.render(payload))
+        self.last_sent_at = now
+        return messages
+
+    def send_message(self, message: str, sender: Callable[[int, str], None]) -> None:
+        for gid in self.config.group_ids:
+            sender(gid, message)
+
+    def get_runtime_state(self) -> Dict[str, Any]:
+        return {
+            "last_sent_at": self.last_sent_at.strftime("%Y-%m-%d %H:%M:%S") if self.last_sent_at else "",
+            "last_price": self.last_price,
+        }
+
+
 def create_signal_instance(config: SignalConfig) -> SingleBase:
     if config.signal_type == SingleType.PRICE_RANGE:
         return PriceRangeSignal(config)
     if config.signal_type == SingleType.FIBONACCI_RETRACE:
         return FibonacciRetraceSignal(config)
+    if config.signal_type == SingleType.PRICE_LEVEL_INTERVAL:
+        return PriceLevelIntervalSignal(config)
     raise ValueError(f"不支持的信号类型: {config.signal_type}")
+
+
+def validate_signal_rule_payload(
+    *,
+    signal_type: SingleType,
+    params: Dict[str, Any],
+    send_type: SendType,
+    send_interval_seconds: int,
+    message_template: Optional[str] = None,
+) -> None:
+    """校验规则能否成功实例化；不通过时抛出 ValueError。"""
+    tpl_text = (message_template or "").strip() or SignalMessageTemplate().template
+    cfg = SignalConfig(
+        stock_code="__validate__",
+        stock_name="",
+        group_ids=[1],
+        signal_type=signal_type,
+        params=dict(params or {}),
+        message_template=SignalMessageTemplate(template=tpl_text),
+        send_type=send_type,
+        send_interval_seconds=int(send_interval_seconds or 0),
+        runtime_state={},
+    )
+    create_signal_instance(cfg)
 
 
 class SingleManager:
@@ -254,13 +392,30 @@ class SingleManager:
                 {
                     "name": "signal_type",
                     "type": "enum",
-                    "options": [SingleType.PRICE_RANGE.value, SingleType.FIBONACCI_RETRACE.value],
+                    "options": [
+                        SingleType.PRICE_RANGE.value,
+                        SingleType.FIBONACCI_RETRACE.value,
+                        SingleType.PRICE_LEVEL_INTERVAL.value,
+                    ],
                     "required": True,
                 },
                 {"name": "params.lower", "type": "number", "required": False},
                 {"name": "params.upper", "type": "number", "required": False},
                 {"name": "params.low", "type": "number", "required": False},
                 {"name": "params.high", "type": "number", "required": False},
+                {
+                    "name": "params.target_price",
+                    "type": "number",
+                    "description": "到价提醒(price_level_interval) 目标价",
+                    "required": False,
+                },
+                {
+                    "name": "params.mode",
+                    "type": "enum",
+                    "options": ["at_or_above", "at_or_below"],
+                    "description": "at_or_above: 价>=目标；at_or_below: 价<=目标",
+                    "required": False,
+                },
                 {
                     "name": "params.templates",
                     "type": "object",
@@ -269,7 +424,12 @@ class SingleManager:
                 },
                 {"name": "message_template", "type": "text", "required": False},
                 {"name": "send_type", "type": "enum", "options": [SendType.ON_TRIGGER.value, SendType.INTERVAL.value], "required": True},
-                {"name": "send_interval_seconds", "type": "int", "required": False},
+                {
+                    "name": "send_interval_seconds",
+                    "type": "int",
+                    "description": f"到价提醒必填，且≥{PRICE_LEVEL_INTERVAL_MIN_SECONDS} 秒",
+                    "required": False,
+                },
             ],
         }
 

@@ -60,7 +60,24 @@
                             <select class="form-select" id="signalType">
                                 <option value="price_range">价格区间</option>
                                 <option value="fibonacci_retrace">黄金分割回撤</option>
+                                <option value="price_level_interval">到价提醒（到价后按秒重复提醒）</option>
                             </select>
+                        </div>
+                        <div class="col-12" id="priceLevelSection" style="display:none;">
+                            <div class="row g-3">
+                                <div class="col-md-4">
+                                    <label class="form-label">目标价</label>
+                                    <input type="number" step="0.001" class="form-control" id="targetPrice" value="10.0">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">触发条件</label>
+                                    <select class="form-select" id="priceLevelMode">
+                                        <option value="at_or_above">现价 ≥ 目标价</option>
+                                        <option value="at_or_below">现价 ≤ 目标价</option>
+                                    </select>
+                                </div>
+                                <div class="col-12 small text-muted">须选择「间隔发送」并填写发送间隔（秒，最少 60）。</div>
+                            </div>
                         </div>
                         <div class="col-12" id="priceRangeSection">
                             <div class="row g-3">
@@ -97,12 +114,17 @@
                             <label class="form-label">发送类型</label>
                             <select class="form-select" id="sendType">
                                 <option value="on_trigger">触发即发送</option>
-                                <option value="interval">间隔发送（预留）</option>
+                                <option value="interval">间隔发送</option>
                             </select>
+                        </div>
+                        <div class="col-md-4" id="sendIntervalWrap">
+                            <label class="form-label">发送间隔（秒）</label>
+                            <input type="number" step="1" min="60" class="form-control" id="sendIntervalSeconds" value="300" title="到价提醒至少 60 秒">
                         </div>
                         <div class="col-12" id="priceRangeTemplateSection">
                             <label class="form-label">消息模板</label>
                             <textarea class="form-control" id="messageTemplate" rows="2">股票 {stock_code}({stock_name}) 触发{signal_type}信号，当前价格: {price:.3f}，触发边界: {boundary}，区间[{lower:.3f}, {upper:.3f}]，时间: {time}</textarea>
+                            <div class="small text-muted mt-1" id="priceLevelTplHint" style="display:none;">到价提醒常用变量：<code>{target_price}</code>、<code>{mode_label}</code>、<code>{price}</code>、<code>{stock_code}</code> 等，详见文档「信号通知系统」。</div>
                         </div>
                         <div class="col-12" id="fibTemplateSection" style="display:none;">
                             <div class="small text-muted mb-2">黄金分割三类条件可分别设置消息（未填则使用规则主模板回退）。</div>
@@ -137,11 +159,13 @@
 <script>
 const SIGNAL_TYPES = {
     price_range: 'price_range',
-    fibonacci_retrace: 'fibonacci_retrace'
+    fibonacci_retrace: 'fibonacci_retrace',
+    price_level_interval: 'price_level_interval'
 };
 const DEFAULT_TEMPLATES = {
     price_range: '股票 {stock_code}({stock_name}) 触发{signal_type}信号，当前价格: {price:.3f}，触发边界: {boundary}，区间[{lower:.3f}, {upper:.3f}]，时间: {time}',
-    fibonacci_retrace: '股票 {stock_code}({stock_name}) 触发{signal_type}，当前价格: {price:.3f}，区间[{fib_low:.3f}, {fib_high:.3f}]，档位(0.382/0.5/0.618): {level_382:.3f}/{level_500:.3f}/{level_618:.3f}，判定: {zone_label}，时间: {time}'
+    fibonacci_retrace: '股票 {stock_code}({stock_name}) 触发{signal_type}，当前价格: {price:.3f}，区间[{fib_low:.3f}, {fib_high:.3f}]，档位(0.382/0.5/0.618): {level_382:.3f}/{level_500:.3f}/{level_618:.3f}，判定: {zone_label}，时间: {time}',
+    price_level_interval: '【到价提醒】{stock_code}({stock_name}) {mode_label}，现价 {price:.3f}，目标 {target_price:.3f}，间隔提醒，时间: {time}'
 };
 const DEFAULT_FIB_ZONE_TEMPLATES = {
     normal_buy: '【常规买点】{stock_code}({stock_name}) 现价 {price:.3f}，区间[{fib_low:.3f},{fib_high:.3f}] 档位382/500/618: {level_382:.3f}/{level_500:.3f}/{level_618:.3f}，时间: {time}',
@@ -164,19 +188,35 @@ function getSignalType() {
 }
 
 function renderSignalTypeFields() {
-    const isFib = getSignalType() === SIGNAL_TYPES.fibonacci_retrace;
+    const type = getSignalType();
+    const isFib = type === SIGNAL_TYPES.fibonacci_retrace;
+    const isPl = type === SIGNAL_TYPES.price_level_interval;
     const fibSection = document.getElementById('fibSection');
     const priceRangeSection = document.getElementById('priceRangeSection');
+    const priceLevelSection = document.getElementById('priceLevelSection');
     const priceRangeTemplateSection = document.getElementById('priceRangeTemplateSection');
     const fibTemplateSection = document.getElementById('fibTemplateSection');
+    const sendTypeEl = document.getElementById('sendType');
     const lowerPrice = document.getElementById('lowerPrice');
     const upperPrice = document.getElementById('upperPrice');
     fibSection.style.display = isFib ? '' : 'none';
-    priceRangeSection.style.display = isFib ? 'none' : '';
+    priceLevelSection.style.display = isPl ? '' : 'none';
+    priceRangeSection.style.display = (isFib || isPl) ? 'none' : '';
+    /* 到价提醒与价格区间共用主 message_template，仅 fib 隐藏主模板区 */
     priceRangeTemplateSection.style.display = isFib ? 'none' : '';
     fibTemplateSection.style.display = isFib ? '' : 'none';
-    lowerPrice.required = !isFib;
-    upperPrice.required = !isFib;
+    lowerPrice.required = !isFib && !isPl;
+    upperPrice.required = !isFib && !isPl;
+    if (isPl) {
+        sendTypeEl.value = 'interval';
+        sendTypeEl.disabled = true;
+    } else {
+        sendTypeEl.disabled = false;
+    }
+    document.getElementById('sendIntervalWrap').style.display =
+        (isPl || sendTypeEl.value === 'interval') ? '' : 'none';
+    const plHint = document.getElementById('priceLevelTplHint');
+    if (plHint) plHint.style.display = isPl ? '' : 'none';
 }
 
 function syncTemplateByType() {
@@ -188,6 +228,12 @@ function syncTemplateByType() {
     const textarea = document.getElementById('messageTemplate');
     const current = (textarea.value || '').trim();
     const allDefaults = Object.values(DEFAULT_TEMPLATES);
+    if (type === SIGNAL_TYPES.price_level_interval) {
+        if (!current || allDefaults.includes(current)) {
+            textarea.value = DEFAULT_TEMPLATES.price_level_interval;
+        }
+        return;
+    }
     if (!current || allDefaults.includes(current)) {
         textarea.value = DEFAULT_TEMPLATES.price_range;
     }
@@ -310,14 +356,24 @@ function startEditSignal(ruleId) {
             (t.strong_support != null && String(t.strong_support).trim() !== '') ? t.strong_support : DEFAULT_FIB_ZONE_TEMPLATES.strong_support;
         document.getElementById('fibTplGoldenPit').value =
             (t.golden_pit != null && String(t.golden_pit).trim() !== '') ? t.golden_pit : DEFAULT_FIB_ZONE_TEMPLATES.golden_pit;
+    } else if ((row.signal_type || '') === SIGNAL_TYPES.price_level_interval) {
+        document.getElementById('targetPrice').value = Number((row.params || {}).target_price || 0);
+        document.getElementById('priceLevelMode').value = (row.params || {}).mode || 'at_or_above';
     } else {
         document.getElementById('lowerPrice').value = Number((row.params || {}).lower || 0);
         document.getElementById('upperPrice').value = Number((row.params || {}).upper || 0);
     }
     document.getElementById('sendType').value = row.send_type || 'on_trigger';
-    if ((row.signal_type || '') !== SIGNAL_TYPES.fibonacci_retrace) {
+    document.getElementById('sendIntervalSeconds').value = Number(row.send_interval_seconds || 300);
+    if ((row.signal_type || '') === SIGNAL_TYPES.fibonacci_retrace) {
+        /* 模板在三段 textarea */
+    } else if ((row.signal_type || '') === SIGNAL_TYPES.price_level_interval) {
+        document.getElementById('messageTemplate').value =
+            row.message_template || DEFAULT_TEMPLATES.price_level_interval;
+    } else {
         document.getElementById('messageTemplate').value = row.message_template || '';
     }
+    renderSignalTypeFields();
     setEditMode(ruleId, row.stock_code);
     const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('signalEditorModal'));
     modal.show();
@@ -347,19 +403,27 @@ async function saveSignal() {
             }
         };
         messageTemplate = pickFibMessageTemplateForDb();
+    } else if (signalType === SIGNAL_TYPES.price_level_interval) {
+        params = {
+            target_price: Number(document.getElementById('targetPrice').value),
+            mode: document.getElementById('priceLevelMode').value
+        };
     } else {
         params = {
             lower: Number(document.getElementById('lowerPrice').value),
             upper: Number(document.getElementById('upperPrice').value)
         };
     }
+    const sendTypeVal = document.getElementById('sendType').value;
+    const intervalSec = parseInt(document.getElementById('sendIntervalSeconds').value || '0', 10) || 0;
     const payload = {
         stock_code: document.getElementById('stockCode').value.trim(),
         stock_name: document.getElementById('stockName').value.trim(),
         group_ids: parseGroupIds(document.getElementById('groupIds').value),
         signal_type: signalType,
         params: params,
-        send_type: document.getElementById('sendType').value,
+        send_type: sendTypeVal,
+        send_interval_seconds: intervalSec,
         message_template: messageTemplate
     };
     const isEditing = Number.isInteger(editingRuleId);
@@ -414,6 +478,9 @@ document.getElementById('refreshSignalsBtn').addEventListener('click', refreshSi
 document.getElementById('signalType').addEventListener('change', function() {
     renderSignalTypeFields();
     syncTemplateByType();
+});
+document.getElementById('sendType').addEventListener('change', function() {
+    renderSignalTypeFields();
 });
 document.getElementById('calcFibBtn').addEventListener('click', calcFibLevels);
 document.getElementById('fibLow').addEventListener('input', calcFibLevels);

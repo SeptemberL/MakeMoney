@@ -579,7 +579,7 @@ class Database:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
 
     def _create_signal_rule_tables_sqlite(self):
-        """信号规则表（SQLite）"""
+        """信号规则表（SQLite）。signal_type 为自由文本，含 price_range / fibonacci_retrace / price_level_interval（到价提醒）等。"""
         self.execute('''CREATE TABLE IF NOT EXISTS signal_rule (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             stock_code TEXT NOT NULL,
@@ -604,7 +604,7 @@ class Database:
             pass
 
     def _create_signal_rule_tables_mysql(self):
-        """信号规则表（MySQL）"""
+        """信号规则表（MySQL）。signal_type 为自由文本，含 price_range / fibonacci_retrace / price_level_interval（到价提醒）等。"""
         self.execute('''CREATE TABLE IF NOT EXISTS signal_rule (
             id INT AUTO_INCREMENT PRIMARY KEY,
             stock_code VARCHAR(32) NOT NULL,
