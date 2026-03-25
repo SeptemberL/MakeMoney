@@ -83,6 +83,25 @@
     table.excel-table tbody tr:hover td {
       background: #eef6ff; /* 悬浮行高亮 */
     }
+
+    th.wl-sort-th {
+      cursor: pointer;
+      user-select: none;
+    }
+    th.wl-sort-th .wl-sort-ind {
+      font-size: 11px;
+      margin-left: 2px;
+      color: #0d6efd;
+    }
+    td.wl-rowhdr-handle[draggable="true"] {
+      cursor: grab;
+    }
+    td.wl-rowhdr-handle[draggable="true"]:active {
+      cursor: grabbing;
+    }
+    tr.wl-dragging td {
+      background: #e8f4ff;
+    }
   </style>
 
   <div class="d-flex justify-content-between align-items-center">
@@ -124,10 +143,10 @@
         </tr>
         <tr>
           <th class="excel-corner"></th>
-          <th>股票名称</th>
-          <th class="text-end">当日价格</th>
-          <th class="text-end">涨跌幅</th>
-          <th class="text-end">分时均价</th>
+          <th class="wl-sort-th" data-wl-sort="name" title="点击：无排序 → 升序 → 降序 → 无排序">股票名称<span class="wl-sort-ind" aria-hidden="true"></span></th>
+          <th class="text-end wl-sort-th" data-wl-sort="price" title="点击切换排序">当日价格<span class="wl-sort-ind" aria-hidden="true"></span></th>
+          <th class="text-end wl-sort-th" data-wl-sort="pct" title="点击切换排序">涨跌幅<span class="wl-sort-ind" aria-hidden="true"></span></th>
+          <th class="text-end wl-sort-th" data-wl-sort="avg" title="点击切换排序">分时均价<span class="wl-sort-ind" aria-hidden="true"></span></th>
           <th class="text-end">操作</th>
         </tr>
       </thead>
@@ -135,7 +154,7 @@
         {% if watchlist %}
           {% for w in watchlist %}
             <tr class="watchlist-row" data-stock-code="{{ w.stock_code or '' }}">
-              <td class="excel-rowhdr">{{ loop.index }}</td>
+              <td class="excel-rowhdr wl-rowhdr-handle" draggable="false" title="">{{ loop.index }}</td>
               <td class="excel-multiline">
                 <div>{{ w.stock_name or '' }}</div>
                 <div class="excel-subtext">
@@ -464,6 +483,239 @@
     const WATCHLIST_STORAGE_KEY = 'watchlist_items_v1';
     let wlUseServerSync = false;
 
+    /** 当前页权威自选顺序（与持久化一致）；列排序仅重排 DOM，不修改本数组 */
+    let wlItems = [];
+    let wlSortColumn = null; // 'name' | 'price' | 'pct' | 'avg'
+    let wlSortDirection = null; // 'asc' | 'desc'
+    let wlDragDelegationBound = false;
+    let wlSortHeadersBound = false;
+    let wlDraggedRow = null;
+
+    function renumberWlRowHeaders() {
+      document.querySelectorAll('#watchlist-table tbody tr.watchlist-row').forEach((tr, i) => {
+        const h = tr.querySelector('.excel-rowhdr');
+        if (h) h.textContent = String(i + 1);
+      });
+    }
+
+    function parseNameFromWlRow(tr) {
+      const cell = tr.querySelector('td.excel-multiline');
+      const div = cell && cell.querySelector('div');
+      return String((div && div.textContent) || '').trim();
+    }
+
+    function parsePriceFromWlRow(tr) {
+      const el = tr.querySelector('.day-price');
+      const t = String((el && el.textContent) || '').trim();
+      if (t === '' || t === '-') return null;
+      const n = parseFloat(t);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function parsePctFromWlRow(tr) {
+      const el = tr.querySelector('.day-pct');
+      const t = String((el && el.textContent) || '').trim().replace(/%/g, '');
+      if (t === '' || t === '-') return null;
+      const n = parseFloat(t);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function parseAvgFromWlRow(tr) {
+      const el = tr.querySelector('.wl-day-avg');
+      const t = String((el && el.textContent) || '').trim();
+      if (t === '' || t === '-') return null;
+      const n = parseFloat(t);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function compareWlRowsBySortColumn(trA, trB, col, dir) {
+      const mult = dir === 'asc' ? 1 : -1;
+      let cmp = 0;
+      if (col === 'name') {
+        const na = parseNameFromWlRow(trA);
+        const nb = parseNameFromWlRow(trB);
+        cmp = na.localeCompare(nb, 'zh-CN');
+      } else {
+        const ka =
+          col === 'price'
+            ? parsePriceFromWlRow(trA)
+            : col === 'pct'
+              ? parsePctFromWlRow(trA)
+              : parseAvgFromWlRow(trA);
+        const kb =
+          col === 'price'
+            ? parsePriceFromWlRow(trB)
+            : col === 'pct'
+              ? parsePctFromWlRow(trB)
+              : parseAvgFromWlRow(trB);
+        const missA = ka === null;
+        const missB = kb === null;
+        if (missA && missB) cmp = 0;
+        else if (missA) cmp = 1;
+        else if (missB) cmp = -1;
+        else cmp = ka === kb ? 0 : ka < kb ? -1 : 1;
+      }
+      if (cmp !== 0) return cmp * mult;
+      const codeA = String(trA.getAttribute('data-stock-code') || '');
+      const codeB = String(trB.getAttribute('data-stock-code') || '');
+      return codeA.localeCompare(codeB);
+    }
+
+    function applySortedWlDomOrder() {
+      const tbody = document.querySelector('#watchlist-table tbody');
+      if (!tbody || !wlSortColumn || !wlSortDirection) return;
+      const rows = [...tbody.querySelectorAll('tr.watchlist-row')];
+      if (rows.length < 2) {
+        renumberWlRowHeaders();
+        return;
+      }
+      rows.sort((a, b) => compareWlRowsBySortColumn(a, b, wlSortColumn, wlSortDirection));
+      rows.forEach((r) => tbody.appendChild(r));
+      renumberWlRowHeaders();
+    }
+
+    function restoreCanonicalWlDomOrder() {
+      const tbody = document.querySelector('#watchlist-table tbody');
+      if (!tbody) return;
+      const rows = [...tbody.querySelectorAll('tr.watchlist-row')];
+      const findRow = (it) => {
+        const sc = String(it.stock_code || '').trim();
+        let r = rows.find((x) => (x.getAttribute('data-stock-code') || '') === sc);
+        if (r) return r;
+        const k = normalizeBasicKey(sc);
+        return rows.find((x) => normalizeBasicKey(x.getAttribute('data-stock-code') || '') === k);
+      };
+      wlItems.forEach((it) => {
+        const r = findRow(it);
+        if (r) tbody.appendChild(r);
+      });
+      renumberWlRowHeaders();
+    }
+
+    function updateWlSortHeaders() {
+      document.querySelectorAll('th[data-wl-sort]').forEach((th) => {
+        const col = th.getAttribute('data-wl-sort');
+        const ind = th.querySelector('.wl-sort-ind');
+        if (!ind) return;
+        if (wlSortColumn === col && wlSortDirection) {
+          ind.textContent = wlSortDirection === 'asc' ? '▲' : '▼';
+        } else {
+          ind.textContent = '';
+        }
+      });
+    }
+
+    function setWlRowHeadersDraggableState() {
+      const canDrag = !wlSortColumn;
+      document.querySelectorAll('#watchlist-table tbody tr.watchlist-row .wl-rowhdr-handle').forEach((td) => {
+        td.draggable = canDrag;
+        td.title = canDrag ? '拖拽调整顺序（列无排序时）' : '列排序开启时不可拖拽';
+      });
+    }
+
+    function onWatchlistSortHeaderClick(col) {
+      if (wlSortColumn === col) {
+        if (wlSortDirection === 'asc') wlSortDirection = 'desc';
+        else if (wlSortDirection === 'desc') {
+          wlSortColumn = null;
+          wlSortDirection = null;
+        }
+      } else {
+        wlSortColumn = col;
+        wlSortDirection = 'asc';
+      }
+      if (wlSortColumn && wlSortDirection) {
+        applySortedWlDomOrder();
+      } else {
+        restoreCanonicalWlDomOrder();
+      }
+      updateWlSortHeaders();
+      setWlRowHeadersDraggableState();
+    }
+
+    function orderWlItemsFromDomRows() {
+      const rows = [...document.querySelectorAll('#watchlist-table tbody tr.watchlist-row')];
+      const out = [];
+      rows.forEach((tr) => {
+        const attr = String(tr.getAttribute('data-stock-code') || '').trim();
+        let it = wlItems.find((i) => i.stock_code === attr);
+        if (!it) {
+          const k = normalizeBasicKey(attr);
+          it = wlItems.find((i) => normalizeBasicKey(i.stock_code) === k);
+        }
+        if (it) out.push(it);
+      });
+      return out.length === wlItems.length ? out : wlItems.map((i) => ({ ...i }));
+    }
+
+    function bindWlTableSortHeadersOnce() {
+      if (wlSortHeadersBound) return;
+      wlSortHeadersBound = true;
+      document.querySelectorAll('#watchlist-table thead th[data-wl-sort]').forEach((th) => {
+        th.addEventListener('click', () => {
+          onWatchlistSortHeaderClick(th.getAttribute('data-wl-sort'));
+        });
+      });
+    }
+
+    function bindWlRowDragDelegationOnce() {
+      if (wlDragDelegationBound) return;
+      const tbody = document.querySelector('#watchlist-table tbody');
+      if (!tbody) return;
+      wlDragDelegationBound = true;
+
+      tbody.addEventListener('dragstart', (e) => {
+        if (wlSortColumn) return;
+        const handle = e.target.closest && e.target.closest('.wl-rowhdr-handle');
+        if (!handle) return;
+        const tr = handle.closest('tr.watchlist-row');
+        if (!tr) return;
+        wlDraggedRow = tr;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', tr.getAttribute('data-stock-code') || '');
+        tr.classList.add('wl-dragging');
+      });
+
+      tbody.addEventListener('dragend', () => {
+        if (wlDraggedRow) wlDraggedRow.classList.remove('wl-dragging');
+        wlDraggedRow = null;
+      });
+
+      tbody.addEventListener('dragover', (e) => {
+        if (!wlDraggedRow || wlSortColumn) return;
+        e.preventDefault();
+        const tr = e.target.closest && e.target.closest('tr.watchlist-row');
+        if (!tr || tr === wlDraggedRow) return;
+        const rect = tr.getBoundingClientRect();
+        const before = e.clientY < rect.top + rect.height / 2;
+        if (before) {
+          tbody.insertBefore(wlDraggedRow, tr);
+        } else {
+          tbody.insertBefore(wlDraggedRow, tr.nextSibling);
+        }
+      });
+
+      tbody.addEventListener('drop', (e) => {
+        if (wlSortColumn) return;
+        e.preventDefault();
+        wlItems = orderWlItemsFromDomRows();
+        persistWatchlistItems(wlItems);
+        renumberWlRowHeaders();
+      });
+    }
+
+    function finalizeWatchlistTableAfterRender() {
+      updateWlSortHeaders();
+      if (wlSortColumn && wlSortDirection) {
+        applySortedWlDomOrder();
+      } else {
+        restoreCanonicalWlDomOrder();
+      }
+      setWlRowHeadersDraggableState();
+      bindWlTableSortHeadersOnce();
+      bindWlRowDragDelegationOnce();
+    }
+
     function setWlSyncHint() {
       const el = document.getElementById('wlSyncHint');
       if (!el) return;
@@ -673,23 +925,31 @@
       if (!tbody) return;
       tbody.innerHTML = '';
 
-      if (!items || !items.length) {
+      wlItems = (items || [])
+        .map((it) => ({
+          stock_code: String(it?.stock_code || '').trim(),
+          stock_name: String(it?.stock_name || '').trim(),
+        }))
+        .filter((it) => it.stock_code);
+
+      if (!wlItems.length) {
         tbody.innerHTML = `
           <tr>
             <td class="excel-rowhdr">1</td>
             <td colspan="5" class="text-center text-muted">暂无自选数据</td>
           </tr>
         `;
+        finalizeWatchlistTableAfterRender();
         return;
       }
 
       const frag = document.createDocumentFragment();
-      items.forEach((it, idx) => {
+      wlItems.forEach((it, idx) => {
         const tr = document.createElement('tr');
         tr.className = 'watchlist-row';
         tr.setAttribute('data-stock-code', it.stock_code || '');
         tr.innerHTML = `
-          <td class="excel-rowhdr">${idx + 1}</td>
+          <td class="excel-rowhdr wl-rowhdr-handle" draggable="false" title="">${idx + 1}</td>
           <td class="excel-multiline">
             <div>${escapeHtml(it.stock_name || '')}</div>
             <div class="excel-subtext">${escapeHtml(it.stock_code || '')}</div>
@@ -719,6 +979,7 @@
       tbody.appendChild(frag);
       bindEditSignalButtons();
       bindTestSignalButtons();
+      finalizeWatchlistTableAfterRender();
     }
 
     function parseGroupIds(raw) {
@@ -1038,6 +1299,8 @@
     }
 
     async function initWatchlistItems() {
+      wlSortColumn = null;
+      wlSortDirection = null;
       let items = [];
       const res = await fetchWatchlistFromServer();
       if (res.status === 'ok') {
@@ -1091,7 +1354,9 @@
         const basicCode = normalizeBasicKey(codeRaw);
         if (!basicCode) return;
 
-        let items = await getWatchlistItemsForEdit();
+        let items = wlItems.length
+          ? wlItems.map((i) => ({ stock_code: i.stock_code, stock_name: i.stock_name }))
+          : await getWatchlistItemsForEdit();
         const existingByBasicKey = new Map();
         (items || []).forEach(it => {
           const sc = String(it?.stock_code || '').trim();

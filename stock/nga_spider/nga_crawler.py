@@ -11,7 +11,6 @@ import time
 import math
 import random
 import logging
-import platform
 from typing import List, Optional
 
 import requests
@@ -437,54 +436,21 @@ class NGACrawler:
         nga_db.mark_sent(self.tid, pid, group_id)
 
     def _send_wx(self, msg: str, group_id) -> None:
-        """通过 WXGroupManager 发送微信消息到对应群组"""
+        """按 NOTIFY.channel 走统一通知（飞书 / 微信）。"""
         try:
-            import sys, os
+            import sys
+            import os
+
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             if project_root not in sys.path:
                 sys.path.insert(0, project_root)
 
-            from Managers.wx_group_manager import WXGroupManager
-            mgr = WXGroupManager()
-            chat_list = mgr.find_wx_group(group_id)
+            from Managers.notify_channel import send_notify_to_group
 
-            if not chat_list:
-                logger.warning(f'群组 {group_id} 未找到对应聊天列表，跳过推送')
-                return
-
-            # 允许 wx 实例延迟就绪：发送前再尝试从全局拿一次 / 在 Windows 下尝试创建
-            if self.wx is None:
-                try:
-                    from stocks.stock_global import stockGlobal
-                    if getattr(stockGlobal, 'wx', None):
-                        self.wx = stockGlobal.wx
-                except Exception:
-                    pass
-
-            if self.wx is None and platform.system() == 'Windows':
-                try:
-                    import wxauto
-                    from stocks.stock_global import stockGlobal
-                    self.wx = wxauto.WeChat()
-                    stockGlobal.wx = self.wx
-                    logger.info('微信实例已延迟创建')
-                except Exception as e:
-                    logger.warning(f'微信实例延迟创建失败，将模拟推送: {e}')
-
-            if self.wx is None:
-                logger.info(f'[模拟推送] 群组{group_id}:\n{msg}')
-                return
-
-            for chat in chat_list:
-                try:
-                    self.wx.SendMsg(msg, who=chat)
-                    logger.info(f'已推送到 {chat}: pid={msg[:30]}...')
-                    time.sleep(0.5)
-                except Exception as e:
-                    logger.error(f'发送到 {chat} 失败: {e}')
-
+            send_notify_to_group(int(group_id), msg)
+            logger.info("NGA 已投递通知 group_id=%s pid=%s", group_id, msg[:40] if msg else "")
         except Exception as e:
-            logger.error(f'微信推送失败: {e}')
+            logger.error("NGA 通知投递失败: %s", e, exc_info=True)
 
     # ─────────────────────────── 工具 ────────────────────────────────────────
 

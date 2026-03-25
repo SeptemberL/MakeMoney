@@ -8,8 +8,6 @@ from typing import Dict, Any, Callable, Optional, Union
 
 logger = logging.getLogger(__name__)
 
-from stocks.stock_global import stockGlobal
-
 # 获取当前脚本（A.py）所在目录的父目录（即项目根目录）
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 将项目根目录添加到模块搜索路径
@@ -18,7 +16,7 @@ if project_root not in sys.path:
 
 # 现在可以从 BB 目录导入 B 模块
 from crawls import crawl_lof
-from Managers.wx_group_manager import WXGroupManager
+from Managers.notify_channel import send_notify_to_group
 
 @dataclass
 class LofConfig:
@@ -60,27 +58,21 @@ def check_lof():
                     'out_data': out_data
                 }
                 results.append(result)
-    messages = ''
-    wxGroupManager = WXGroupManager()
-    wxList = wxGroupManager.find_wx_group(1)
-
+    messages = ""
     for result in results:
-        message = result['config'].send_message
+        message = result["config"].send_message
         message = message.format(
-        fund_name=result['out_data']['fund_name'],
-            fund_code=result['out_data']['fund_code'],
-            current_price=result['out_data']['current_price'],
-            unit_nav=result['out_data']['unit_nav'],
-            premium_rate=result['out_data']['premium_rate']
+            fund_name=result["out_data"]["fund_name"],
+            fund_code=result["out_data"]["fund_code"],
+            current_price=result["out_data"]["current_price"],
+            unit_nav=result["out_data"]["unit_nav"],
+            premium_rate=result["out_data"]["premium_rate"],
         )
-        message = message + "\\n"
-        messages = messages + message
-        
+        messages = messages + message + "\n"
 
-    if stockGlobal.wx != None:
-        for wx in wxList:
-            stockGlobal.wx.SendMsg(messages, wx) 
-            
+    if results:
+        gid = int(results[0]["config"].send_message_group)
+        send_notify_to_group(gid, messages)
 
         #url = "https://q.fund.sohu.com/161226/index.shtml"
         #sliver_data = crawl_lof.fetch_fund_data(url)

@@ -32,7 +32,8 @@ from signals.signal_boll3 import Signal_BOLL3
 from stocks.stock_global import stockGlobal
 from stocks.stock_filter import StockFilger
 from Managers.ScanManager import ScanManager
-from Managers.wx_group_manager import WXGroupManager
+from Managers.feishu_bot import feishu_signal_send_batch
+from Managers.notify_channel import send_notify_fallback, send_notify_to_group
 from stock_gatter.stockgetter_btc import StockGetter_BTC
 from signals.signal_notify_system import (
     create_signal_instance,
@@ -94,21 +95,11 @@ def _test_trigger_runtime_state(signal_type: SingleType) -> dict:
 
 def _send_signal_to_group(group_id: int, message: str):
     """
-    信号系统发送适配器：
-    - 若微信实例可用，则按 group_id 找到 chat_list 后逐个发送
-    - 否则仅记录日志，避免阻断主流程
+    信号系统发送适配器（与 NGA/LOF 等同通道）：
+    多 group_id 时请在调用侧用 feishu_signal_send_batch 包裹，飞书单 Webhook 同正文只发一次。
     """
     try:
-        wx = getattr(stockGlobal, 'wx', None)
-        if wx is None:
-            logger.info("信号发送(模拟) group_id=%s, message=%s", group_id, message)
-            return
-        chat_list = WXGroupManager().find_wx_group(group_id) or []
-        if not chat_list:
-            logger.warning("group_id=%s 未配置 chat_list，消息未发送", group_id)
-            return
-        for chat_name in chat_list:
-            wx.SendMsg(message, chat_name)
+        send_notify_to_group(group_id, message)
     except Exception as e:
         logger.error("发送信号消息失败: %s", e, exc_info=True)
 
@@ -143,7 +134,8 @@ def _run_signal_notify_for_stock(stock_code: str, price: float) -> List[str]:
                 )
                 new_messages = signal.update(price)
                 for msg in new_messages:
-                    signal.send_message(msg, _send_signal_to_group)
+                    with feishu_signal_send_batch():
+                        signal.send_message(msg, _send_signal_to_group)
                     messages.append(msg)
                 db.upsert_signal_rule_state(
                     rule_id=rule_id,
@@ -465,7 +457,8 @@ def signal_notify_test_trigger():
                 )
                 new_messages = signal.update(price)
                 for msg in new_messages:
-                    signal.send_message(msg, _send_signal_to_group)
+                    with feishu_signal_send_batch():
+                        signal.send_message(msg, _send_signal_to_group)
                     messages.append(msg)
             except Exception as e:
                 logger.warning("测试触发 signal_rule(id=%s) 失败，已跳过: %s", r.get('id'), e)
@@ -533,7 +526,8 @@ def signal_notify_test_trigger_realtime():
                 )
                 new_messages = signal.update(price)
                 for msg in new_messages:
-                    signal.send_message(msg, _send_signal_to_group)
+                    with feishu_signal_send_batch():
+                        signal.send_message(msg, _send_signal_to_group)
                     messages.append(msg)
             except Exception as e:
                 logger.warning("测试触发(实时价) signal_rule(id=%s) 失败，已跳过: %s", r.get('id'), e)
@@ -1512,7 +1506,7 @@ def get_stock_data(stock_code):
 def update_all_stocks_api():
     try:
         updated_count, failed_stocks, signalMessages = update_all_stocks(True)
-        stockGlobal.wx.SendSignalMessages(signalMessages)
+        send_notify_fallback(signalMessages)
         return jsonify({
             'success': True,
             'updated_count': updated_count,
@@ -1681,20 +1675,17 @@ def delete_chat_group(pk_id):
 
 @bp.route('/api/update_stock_list', methods=['POST'])
 def update_stock_list_api():
-    sendAllMessage = ""
     success, sendAllMessage = manager.update_stock_list(False, None)
-    if platform.system() == 'Windows' and stockGlobal.wx:
-        stockGlobal.wx.SendSignalMessages(sendAllMessage)
+    if sendAllMessage:
+        send_notify_fallback(sendAllMessage)
     if success:
-        if platform.system() == 'Windows' and stockGlobal.wx:
-            SendAllMessages()
+        SendAllMessages()
         return jsonify({
             'success': True, 
             'message': '股票列表更新成功'
         })
     else:
-        if platform.system() == 'Windows' and stockGlobal.wx:
-            SendAllMessages()
+        SendAllMessages()
         return jsonify({
             'success': False,
             'message': '股票列表更新失败'
@@ -2406,7 +2397,7 @@ def send_nga_floor(tid: int, pid: int):
         settings = cfg.get('settings', {}) if isinstance(cfg, dict) else {}
         user_agent = settings.get('user_agent') or None
 
-        # 构造爬虫实例，仅复用其 _send_wx 方法
+        # 构造爬虫实例，复用 _send_wx（内部走 notify_channel 统一通道）
         thread_cfg = {
             'name': thread.get('name') or str(tid),
             'watch_author_ids': thread.get('watch_author_ids') or [],
@@ -2642,10 +2633,12 @@ def AddMessage(message):
     sendAllMessage += message + "\n"
 
 def SendAllMessages():
-    stockGlobal.wx.SendMsg(sendAllMessage, "光影相生") 
+    global sendAllMessage
+    send_notify_fallback(sendAllMessage)
+
 
 def SendSignalMessages(messages):
-    stockGlobal.wx.SendMsg(messages, "光影相生") 
+    send_notify_fallback(messages)
 
 def update_all_stocks(SkipZeroSocks = True):
     try:
