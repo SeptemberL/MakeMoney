@@ -2984,13 +2984,23 @@ def nga_floors_page(tid: int):
     """
     if nga_db is None:
         return render_template(
-            'nga_floors.html', tid=tid, thread=None, watch_authors=[], error="NGA 模块未加载"
+            'nga_floors.html',
+            tid=tid,
+            thread=None,
+            watch_authors=[],
+            default_message_group_id='',
+            error="NGA 模块未加载",
         )
     try:
         thread = nga_db.get_thread_config(tid)
         if not thread:
             return render_template(
-                'nga_floors.html', tid=tid, thread=None, watch_authors=[], error="帖子配置不存在，请先在 NGA 监控页面添加。"
+                'nga_floors.html',
+                tid=tid,
+                thread=None,
+                watch_authors=[],
+                default_message_group_id='',
+                error="帖子配置不存在，请先在 NGA 监控页面添加。",
             )
         watch_ordered: list[int] = []
         seen_uid: set[int] = set()
@@ -3008,12 +3018,30 @@ def nga_floors_page(tid: int):
         for aid in watch_ordered:
             nick = (name_map.get(aid) or '').strip()
             watch_authors.append({'author_id': aid, 'forum_name': nick})
+        dgid = thread.get('message_group_id')
+        default_message_group_id = (
+            str(dgid).strip()
+            if dgid is not None and str(dgid).strip() not in ('', '0')
+            else ''
+        )
         return render_template(
-            'nga_floors.html', tid=tid, thread=thread, watch_authors=watch_authors, error=None
+            'nga_floors.html',
+            tid=tid,
+            thread=thread,
+            watch_authors=watch_authors,
+            default_message_group_id=default_message_group_id,
+            error=None,
         )
     except Exception as e:
         logger.error(f"加载 NGA 楼层页面失败: {str(e)}", exc_info=True)
-        return render_template('nga_floors.html', tid=tid, thread=None, watch_authors=[], error=str(e))
+        return render_template(
+            'nga_floors.html',
+            tid=tid,
+            thread=None,
+            watch_authors=[],
+            default_message_group_id='',
+            error=str(e),
+        )
 
 @bp.route('/api/nga_tasks', methods=['GET'])
 def get_nga_tasks():
@@ -3289,6 +3317,169 @@ def send_nga_floor(tid: int, pid: int):
         logger.error(f"手动发送 NGA 楼层失败: {str(e)}", exc_info=True)
         return jsonify({'success': False, 'message': str(e)}), 500
 
+
+def _build_nga_floor_ai_explain_prompt(
+    *,
+    thread_name: str,
+    tid: int,
+    floor_num: int,
+    pid: int,
+    author_name: str,
+    author_id: int,
+    post_date: str,
+    quote_text: str | None,
+    content_text: str | None,
+    user_prefix: str | None = None,
+) -> str:
+    """拼装发给 Gemini 的用户提示（中文），过长字段截断；可选前置说明由用户填写。"""
+    q = (quote_text or "").strip()
+    c = (content_text or "").strip()
+    max_q, max_c = 8000, 12000
+    q_trunc = q if len(q) <= max_q else q[:max_q] + "\n\n（引用部分已截断）"
+    c_trunc = c if len(c) <= max_c else c[:max_c] + "\n\n（正文部分已截断）"
+    blocks: list[str] = []
+    up = (user_prefix or "").strip()
+    if up:
+        max_u = 4000
+        if len(up) > max_u:
+            up = up[:max_u] + "\n\n（前置说明已截断）"
+        blocks.extend(
+            [
+                "【用户前置说明】（请在遵守安全与事实的前提下尽量落实；若与下文任务冲突，在无安全问题下优先本段）",
+                up,
+                "",
+            ]
+        )
+    blocks.extend(
+        [
+            "请阅读以下来自 NGA 论坛某一楼层的「引用内容」与「作者正文」，用简体中文做详细解释。",
+            "要求：",
+            "1）先概括作者想表达的核心观点；",
+            "2）若存在引用，说明引用与正文的关系、对话脉络；",
+            "3）对可能的专业术语、梗、缩写做简短说明（若无法确定请标明是推测）；",
+            "4）语气客观，条理清晰，可使用小标题与分点。",
+            "",
+            f"帖子标题：{thread_name or '(无)'}",
+            f"tid={tid}，楼层 #{floor_num}，pid={pid}",
+            f"作者：{author_name or '(未知)'}（uid={author_id}）",
+            f"时间：{post_date or '(无)'}",
+            "",
+            "—— 引用（被回复/引用的内容）——",
+            q_trunc if q_trunc else "（无引用）",
+            "",
+            "—— 作者正文 ——",
+            c_trunc if c_trunc else "（无正文）",
+        ]
+    )
+    return "\n".join(blocks)
+
+
+@bp.route('/api/nga_floors/<int:tid>/<int:pid>/ai_explain', methods=['POST'])
+def nga_floor_ai_explain(tid: int, pid: int):
+    """
+    调用 Gemini 根据本楼引用与正文生成详细解释，并通过统一通知通道（微信/飞书等）发送到该帖配置的消息群组。
+    不写入 nga_sent_log（与「发送」原楼区分）。
+    """
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        from Managers.gemini_client import (
+            GeminiAuthError,
+            GeminiClient,
+            GeminiConfigError,
+            GeminiRequestError,
+            GeminiTransientError,
+        )
+
+        thread = nga_db.get_thread_config(tid)
+        if not thread:
+            return jsonify({'success': False, 'message': '帖子配置不存在'}), 404
+
+        payload = request.get_json(silent=True) or {}
+        extra_prompt = (payload.get('extra_prompt') or payload.get('prefix_prompt') or '').strip()
+
+        raw_gid = payload.get('message_group_id')
+        if raw_gid is None or str(raw_gid).strip() in ('', '0'):
+            group_id = thread.get('message_group_id')
+        else:
+            group_id = str(raw_gid).strip()
+
+        if group_id is None or str(group_id).strip() in ('', '0'):
+            return jsonify({'success': False, 'message': '未选择有效的消息群组，请在弹窗中选择或为此帖配置默认群组'}), 400
+
+        db_chk = Database.Create()
+        try:
+            db_chk.ensure_message_group_tables()
+            valid_group_ids = {str(g.get('group_id', '') or '') for g in (db_chk.get_all_message_groups() or [])}
+        finally:
+            db_chk.close()
+        gid_key = str(group_id).strip()
+        if gid_key not in valid_group_ids:
+            return jsonify({'success': False, 'message': '所选消息群组不存在，请从下拉列表中选择'}), 400
+
+        floor = nga_db.get_floor_by_tid_pid(tid, pid)
+        if not floor:
+            return jsonify({'success': False, 'message': '楼层不存在'}), 404
+
+        try:
+            client = GeminiClient.from_config(config)
+        except GeminiConfigError as e:
+            return jsonify({'success': False, 'message': str(e)}), 400
+
+        thread_name = (thread.get('name') or '').strip() or str(tid)
+        prompt = _build_nga_floor_ai_explain_prompt(
+            thread_name=thread_name,
+            tid=tid,
+            floor_num=int(floor['floor_num']),
+            pid=int(floor['pid']),
+            author_name=str(floor.get('author_name') or ''),
+            author_id=int(floor['author_id']),
+            post_date=str(floor.get('post_date') or ''),
+            quote_text=floor.get('quote_text'),
+            content_text=floor.get('content_text'),
+            user_prefix=extra_prompt or None,
+        )
+
+        system_instruction = (
+            "你是熟悉中文网络论坛语境的阅读助手，输出必须使用简体中文。"
+            "只基于用户提供的引用与正文做解释，不要编造楼层中未出现的事实。"
+        )
+
+        try:
+            result = client.generate(
+                prompt,
+                system_instruction=system_instruction,
+                temperature=0.35,
+                max_output_tokens=8192,
+            )
+        except GeminiAuthError as e:
+            return jsonify({'success': False, 'message': str(e)}), 401
+        except (GeminiRequestError, GeminiTransientError) as e:
+            return jsonify({'success': False, 'message': str(e)}), 502
+
+        ai_text = (result.text or "").strip()
+        if not ai_text:
+            return jsonify({'success': False, 'message': 'Gemini 未返回有效解释内容'}), 502
+
+        header = (
+            f"[NGA·AI解释] {thread_name} #{floor['floor_num']} "
+            f"{floor.get('author_name') or ''} (uid={floor['author_id']}, pid={pid})\n"
+            f"{'─' * 24}\n"
+        )
+        outbound = header + ai_text
+
+        try:
+            send_notify_to_group(int(str(group_id).strip()), outbound)
+        except Exception as e:
+            logger.error(f"AI 解释投递通知失败: {e}", exc_info=True)
+            return jsonify({'success': False, 'message': f'解释已生成，但发送到群组失败: {e}'}), 500
+
+        return jsonify({'success': True, 'message': 'AI 解释已发送到所选消息群组'})
+    except Exception as e:
+        logger.error(f"NGA 楼层 AI 解释失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @bp.route('/api/nga_tasks/<int:tid>/toggle', methods=['POST'])
 def toggle_nga_task(tid):
     """切换指定帖子的自动运行开关"""
@@ -3418,7 +3609,15 @@ def get_nga_message_groups():
         db.ensure_message_group_tables()
         groups = db.get_all_message_groups()
         db.close()
-        out = [{'group_id': str(g.get('group_id', '')), 'chat_list': g.get('chat_list', [])} for g in groups]
+        out = [
+            {
+                'group_id': str(g.get('group_id', '') or ''),
+                'name': (g.get('name') or '').strip(),
+                'list_type': str(g.get('list_type') or ''),
+                'chat_list': g.get('chat_list', []) or [],
+            }
+            for g in groups
+        ]
         return jsonify({'success': True, 'groups': out})
     except Exception as e:
         logger.error(f"获取消息群组列表失败: {str(e)}", exc_info=True)

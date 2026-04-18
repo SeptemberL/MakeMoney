@@ -84,6 +84,7 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         const TID = {{ tid }};
+        const DEFAULT_MESSAGE_GROUP_ID = {{ default_message_group_id | tojson }};
         var authorListPage = 1;
 
         function loadFloors(requestedPage) {
@@ -162,7 +163,7 @@
                 '<th style="width:10rem;">时间</th>' +
                 '<th>内容预览</th>' +
                 '<th style="width:6rem;">状态</th>' +
-                '<th style="width:12rem;">操作</th>' +
+                '<th style="width:20rem;">操作</th>' +
                 '</tr>' +
                 '</thead>' +
                 '<tbody>' +
@@ -181,6 +182,7 @@
                         '<td>' +
                         '<button type="button" class="btn btn-sm btn-outline-primary" onclick="sendFloor(' + f.pid + ')">发送</button>' +
                         ' <button type="button" class="btn btn-sm btn-outline-success" onclick="openExportModal(' + f.author_id + ', \'' + escapeJs(f.author_name || '') + '\')">导出</button>' +
+                        ' <button type="button" class="btn btn-sm btn-outline-info" onclick="openAiExplainModal(' + f.pid + ')">AI解释</button>' +
                         '</td>' +
                         '</tr>';
                 }).join('') +
@@ -254,7 +256,94 @@
                 });
         }
 
+        function openAiExplainModal(pid) {
+            if (!aiExplainModal) return;
+            document.getElementById('aiExplainPid').value = String(pid);
+            document.getElementById('aiExplainFloorHint').textContent = '当前楼层 pid: ' + pid;
+            document.getElementById('aiExplainExtraPrompt').value = '';
+            var sel = document.getElementById('aiExplainMessageGroup');
+            sel.innerHTML = '<option value="">正在加载群组…</option>';
+            sel.disabled = true;
+            fetch('/api/nga_message_groups')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    sel.innerHTML = '';
+                    sel.disabled = false;
+                    if (!data.success || !data.groups || !data.groups.length) {
+                        sel.innerHTML = '<option value="0">（无可用消息群组，请先在系统里配置）</option>';
+                        aiExplainModal.show();
+                        return;
+                    }
+                    data.groups.forEach(function(g) {
+                        var opt = document.createElement('option');
+                        opt.value = String(g.group_id);
+                        var chats = (g.chat_list || []).join(', ');
+                        var name = g.name || '';
+                        var parts = ['群组 ' + g.group_id];
+                        if (name) parts.push(name);
+                        if (chats) parts.push(chats);
+                        opt.textContent = parts.join(' · ');
+                        sel.appendChild(opt);
+                    });
+                    if (DEFAULT_MESSAGE_GROUP_ID) {
+                        sel.value = String(DEFAULT_MESSAGE_GROUP_ID);
+                    }
+                    if (!sel.value && sel.options.length) {
+                        sel.selectedIndex = 0;
+                    }
+                    aiExplainModal.show();
+                })
+                .catch(function() {
+                    sel.disabled = false;
+                    sel.innerHTML = '<option value="0">加载失败</option>';
+                    aiExplainModal.show();
+                });
+        }
+
+        function submitAiExplain() {
+            var pid = (document.getElementById('aiExplainPid').value || '').trim();
+            var gid = (document.getElementById('aiExplainMessageGroup').value || '').trim();
+            var extra = (document.getElementById('aiExplainExtraPrompt').value || '').trim();
+            if (!pid) {
+                alert('内部错误：未指定楼层');
+                return;
+            }
+            if (!gid || gid === '0') {
+                alert('请选择一个消息群组');
+                return;
+            }
+            var btn = document.getElementById('btnAiExplainSubmit');
+            var oldText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = '处理中…';
+            fetch('/api/nga_floors/' + TID + '/' + pid + '/ai_explain', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    extra_prompt: extra,
+                    message_group_id: gid
+                })
+            })
+                .then(function(res) { return res.json().then(function(data) { return { data: data }; }); })
+                .then(function(r) {
+                    if (r.data.success) {
+                        aiExplainModal.hide();
+                        alert(r.data.message || '已发送');
+                    } else {
+                        alert(r.data.message || 'AI 解释失败');
+                    }
+                })
+                .catch(function(err) {
+                    alert('请求失败: ' + err.message);
+                })
+                .finally(function() {
+                    btn.disabled = false;
+                    btn.textContent = oldText;
+                });
+        }
+
         let exportModal = null;
+        let aiExplainModal = null;
 
         function openExportModal(authorId, authorName) {
             document.getElementById('exportAuthorId').value = String(authorId || '');
@@ -300,6 +389,11 @@
                 });
             }
             loadFloors();
+            exportModal = new bootstrap.Modal(document.getElementById('exportModal'));
+            var aiEl = document.getElementById('aiExplainModal');
+            if (aiEl) {
+                aiExplainModal = new bootstrap.Modal(aiEl);
+            }
         });
     </script>
 
@@ -346,11 +440,38 @@
         </div>
     </div>
 
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            exportModal = new bootstrap.Modal(document.getElementById('exportModal'));
-        });
-    </script>
+    <!-- AI 解释弹窗 -->
+    <div class="modal fade" id="aiExplainModal" tabindex="-1" aria-labelledby="aiExplainModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="aiExplainModalLabel">AI 解释本楼</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="aiExplainPid" value="" />
+                    <p class="text-muted small mb-3" id="aiExplainFloorHint"></p>
+                    <div class="mb-3">
+                        <label for="aiExplainMessageGroup" class="form-label">发送到消息群组</label>
+                        <select class="form-select" id="aiExplainMessageGroup"></select>
+                        <div class="form-text">默认选中本帖在 NGA 监控里配置的群组；可改为其他已配置的群组。</div>
+                    </div>
+                    <div class="mb-2">
+                        <label for="aiExplainExtraPrompt" class="form-label">前置提示词（可选）</label>
+                        <textarea class="form-control" id="aiExplainExtraPrompt" rows="5" placeholder="例如：请侧重分析其中的投资逻辑；请用新手能听懂的语言；请对比引用内容与正文的矛盾点…"></textarea>
+                        <div class="form-text">将插在模型任务说明之前，用于补充你的分析角度或风格要求。</div>
+                    </div>
+                    <div class="alert alert-light border small mb-0">
+                        将调用 Gemini 阅读本楼<strong>引用</strong>与<strong>正文</strong>后生成解释，并通过所选通道（微信 / 飞书等）发送；不标记楼层为「已发送」。
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="btnAiExplainSubmit" onclick="submitAiExplain()">生成并发送</button>
+                </div>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
 
