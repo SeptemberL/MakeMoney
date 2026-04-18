@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from signals.signal_boll3 import Signal_BOLL3
 from signals.signal_dljg2 import Signal_DLJG2
+from signals.signal_meirenjian import Signal_MeirenJian
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +68,11 @@ class StockFilger:
         ]
         return results
     
-    def filter_stock(self, df, dayRange, filterSignals, target_date=None):
+    def filter_stock(self, df, dayRange, filterSignals, target_date=None, signal_params=None):
         """
         单只股票按信号筛选。返回 (signal_dict_or_None, avg_return, positive_prob)。
         target_date: 可选，YYYY-MM-DD；不传则使用当前交易日。
+        signal_params: 可选，dict[str, dict]，按信号名传参，例如 {"MEIRENJIAN": {"minScore": 0.7}}
         """
         if filterSignals is None or (isinstance(filterSignals, (list, tuple)) and len(filterSignals) == 0):
             return None, 0.0, 0.0
@@ -90,6 +92,7 @@ class StockFilger:
         positive_prob = 0.0
         if df is None or df.empty:
             return None, avg_return, positive_prob
+        params_map = signal_params if isinstance(signal_params, dict) else {}
         try:
             df = df.copy()
             df['trade_date'] = pd.to_datetime(df['trade_date'])
@@ -98,13 +101,17 @@ class StockFilger:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             for signal in filterSignals:
-                signalClass = self.create_signal_class(signal)
+                per_params = params_map.get(signal) if isinstance(params_map.get(signal), dict) else {}
+                signalClass = self.create_signal_class(signal, per_params)
                 if signalClass is not None:
                     try:
                         dftemp, avg_return, positive_prob = signalClass.calculate(df)
                     except Exception as e:
                         logger.warning("信号 %s 计算指标失败: %s", signal, e)
                         continue
+                    # 允许信号在 df 上打标/派生列：后续信号与信号扫描都应基于最新 df
+                    if dftemp is not None:
+                        df = dftemp
                     sig_list = self.calculate_signal(signalClass, df, day_range, target_date=target_date)
                     if len(sig_list) > 0:
                         newSig = {}
@@ -140,11 +147,14 @@ class StockFilger:
                
             # 检查信号条件
             #check_signal_conditions(df, stock_code)
-    def create_signal_class(self, className):
+    def create_signal_class(self, className, params=None):
+        params = params if isinstance(params, dict) else {}
         if className == 'BOLL':
             return Signal_BOLL3(sd_period=30)
         elif className == 'DLJG':
             return Signal_DLJG2()
+        elif className == 'MEIRENJIAN':
+            return Signal_MeirenJian(**params)
         return None
     
     def calculate_signal(self, signalClass, df, dayRange, target_date=None):

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }} · 信号通知</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg-page: #0c0f14;
+      --card-bg: linear-gradient(145deg, #151a22 0%, #0d1118 55%, #121820 100%);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --text-primary: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-soft: rgba(56, 189, 248, 0.15);
+      --success: #34d399;
+      --danger: #f87171;
+      --row-hover: rgba(255, 255, 255, 0.04);
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--card-border);
+      --radius: 20px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 16px;
+      font-family: "DM Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(56, 189, 248, 0.12), transparent),
+        radial-gradient(ellipse 60% 40% at 100% 100%, rgba(52, 211, 153, 0.06), transparent),
+        var(--bg-page);
+      color: var(--text-primary);
+    }
+    .wrap { width: 100%; max-width: 420px; }
+    .card {
+      position: relative;
+      border-radius: var(--radius);
+      background: var(--card-bg);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      border: 1px solid var(--card-border);
+    }
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(120deg, rgba(56, 189, 248, 0.07) 0%, transparent 45%, rgba(52, 211, 153, 0.05) 100%);
+      pointer-events: none;
+    }
+    .card-inner { position: relative; padding: 28px 26px 24px; }
+    .header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 22px;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .logo {
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      background: var(--accent-soft);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      display: grid;
+      place-items: center;
+      font-size: 20px;
+    }
+    .title-block h1 { margin: 0; font-size: 1.05rem; font-weight: 700; letter-spacing: 0.02em; }
+    .title-block p { margin: 4px 0 0; font-size: 0.8rem; color: var(--text-muted); }
+    .badge {
+      flex-shrink: 0;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: rgba(52, 211, 153, 0.12);
+      color: var(--success);
+      border: 1px solid rgba(52, 211, 153, 0.28);
+    }
+    .badge.warn {
+      background: rgba(248, 113, 113, 0.12);
+      color: var(--danger);
+      border-color: rgba(248, 113, 113, 0.28);
+    }
+    .badge.neutral {
+      background: rgba(148, 163, 184, 0.1);
+      color: var(--text-muted);
+      border-color: rgba(148, 163, 184, 0.2);
+    }
+    .stock-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px 14px; margin-bottom: 20px; }
+    .stock-name { font-size: 1.65rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; }
+    .stock-code {
+      font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--accent);
+      border: 1px solid rgba(56, 189, 248, 0.2);
+    }
+    .divider {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+      margin: 0 0 8px;
+    }
+    .rows { display: flex; flex-direction: column; gap: 2px; }
+    .row {
+      display: grid;
+      grid-template-columns: minmax(100px, 38%) 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 12px 10px;
+      margin: 0 -10px;
+      border-radius: 12px;
+      transition: background 0.15s ease;
+    }
+    .row:hover { background: var(--row-hover); }
+    .row-label { font-size: 0.82rem; color: var(--text-muted); font-weight: 500; padding-top: 2px; }
+    .row-value {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      text-align: right;
+      word-break: break-word;
+      line-height: 1.45;
+    }
+    .row-value.mono { font-family: "JetBrains Mono", monospace; font-weight: 600; }
+    .row-value.highlight { color: var(--success); font-size: 1.05rem; }
+    .row-value.alert { color: var(--danger); }
+    .row-value.accent { color: var(--accent); }
+    .footer { margin-top: 18px; padding-top: 16px; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+    .remark { font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; white-space: pre-wrap; }
+    .timestamp { margin-top: 12px; font-size: 0.72rem; color: rgba(148, 163, 184, 0.75); text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card" aria-label="股票信号通知">
+      <div class="card-inner">
+        <header class="header">
+          <div class="brand">
+            <div class="logo">{{ logo_emoji }}</div>
+            <div class="title-block">
+              <h1>{{ title }}</h1>
+              <p>{{ subtitle }}</p>
+            </div>
+          </div>
+          <span class="badge{% if badge_style == 'warn' %} warn{% elif badge_style == 'neutral' %} neutral{% endif %}" role="status">{{ badge_text }}</span>
+        </header>
+        <div class="stock-row">
+          <span class="stock-name">{{ stock_name }}</span>
+          <span class="stock-code">{{ stock_code }}</span>
+        </div>
+        <div class="divider"></div>
+        <div class="rows">
+          {% for r in rows %}
+          <div class="row">
+            <div class="row-label">{{ r.label }}</div>
+            <div class="row-value{% if r.style == 'mono' %} mono{% elif r.style == 'highlight' %} highlight{% elif r.style == 'alert' %} alert{% elif r.style == 'accent' %} accent{% endif %}">{{ r.value }}</div>
+          </div>
+          {% endfor %}
+        </div>
+        <footer class="footer">
+          {% if remark %}
+          <div class="remark">{{ remark }}</div>
+          {% endif %}
+          {% if timestamp %}
+          <div class="timestamp">{{ timestamp }}</div>
+          {% endif %}
+        </footer>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

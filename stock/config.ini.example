@@ -1,0 +1,39 @@
+[DEFAULT]
+DEBUG = False
+SECRET_KEY = your-secret-key-here
+UPDATE_STOCKS_DELAY = 0.2
+
+[DATABASE]
+# DB_TYPE: mysql / sqlite （默认 mysql）
+DB_TYPE = mysql
+DB_HOST = 127.0.0.1
+DB_PORT = 3306
+DB_NAME = stock_db
+DB_USER = root
+DB_PASSWORD = change-me
+DB_CHARSET = utf8mb4
+# SQLite 时使用的文件路径（DB_TYPE=sqlite 时生效，支持相对路径或绝对路径）
+DB_PATH = database/stock.db
+
+[NOTIFY]
+# 信号等消息推送通道：wechat（默认，依赖本机微信+wxauto）或 feishu（HTTP Webhook）
+channel = wechat
+
+[FEISHU]
+# channel=feishu 时填写飞书机器人 Webhook；不要提交真实 webhook/sign
+webhook_url =
+sign =
+timeout_seconds = 10
+
+[TUSHARE]
+# 在 https://tushare.pro 注册后获取 Token；不要提交真实 token
+TOKEN =
+
+[GEMINI]
+# 推荐通过环境变量提供密钥：
+# - GEMINI_API_KEY（优先）
+# - GOOGLE_API_KEY
+# 仅本地开发可在此写 api_key，生产环境不建议。
+api_key =
+model = gemini-1.5-flash
+timeout_seconds = 60

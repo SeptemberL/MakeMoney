@@ -41,6 +41,9 @@ from stocks.stock_global import stockGlobal
 from flask_socketio import SocketIO, emit
 
 from Managers.scheduler_system import TaskManager
+from Managers.scheduled_task_sync import sync_scheduled_tasks_yaml_to_db
+from Managers.runtime_settings import get_setting
+from Managers.scheduler_system import TaskConfig, TriggerType
 
 # NGA 爬虫：根据数据库 nga_thread_config 中 auto_run 开关自动运行
 try:
@@ -114,13 +117,99 @@ if __name__ == '__main__':
     schedule_thread.daemon = True
     schedule_thread.start()
 
-    taskManager = TaskManager(config_file="configs/tasks_config.yaml")
-    
-    # 加载配置
-    taskManager.load_configs()
-    
-    # 启动调度器
+    taskManager = TaskManager(config_file=str(BASE_DIR / "configs" / "tasks_config.yaml"))
+
+    db_tm = Database.Create()
+    try:
+        sync_scheduled_tasks_yaml_to_db(db_tm, BASE_DIR / "configs" / "tasks_config.yaml")
+        if not taskManager.load_configs_from_database(db_tm):
+            logger.error("从数据库加载定时任务失败，调度器可能无任务")
+    finally:
+        db_tm.close()
+
+    # ─────────────────────────── 内置任务：交易时间信号扫描 ────────────────────────────
+    # 目标：启动后即存在一条 interval 任务；周期秒数从 settings_console 写入的 DB 配置读取
+    try:
+        sec_raw = get_setting("SIGNAL_NOTIFY", "update_interval_seconds", "15")
+        try:
+            sec = int(float(sec_raw))
+        except Exception:
+            sec = 15
+        if sec < 5:
+            sec = 5
+        cfg = TaskConfig(
+            task_id="task_signal_notify_tick",
+            task_name="交易时间信号扫描（interval）",
+            module_path="tasks.signal_notify_tick",
+            function_name="run_signal_notify_tick_job",
+            trigger_type=TriggerType.INTERVAL,
+            trigger_args={"seconds": sec},
+            enabled=True,
+            max_instances=1,
+            misfire_grace_time=30,
+            coalesce=True,
+            description="交易时间每N秒全量扫描 signal_rule 并触发通知；N 来自系统设置 SIGNAL_NOTIFY.update_interval_seconds。",
+        )
+        db_tm2 = Database.Create()
+        try:
+            taskManager.persist_task_to_database(db_tm2, cfg)
+            # 写入后重新从数据库加载一遍（保证本轮启动已注册到 scheduler）
+            taskManager.load_configs_from_database(db_tm2)
+        finally:
+            db_tm2.close()
+    except Exception as e:
+        logger.error("初始化 signal_notify tick 任务失败: %s", e, exc_info=True)
+
+    # ─────────────────────────── 内置任务：信号 state 写入缓冲落库（Redis 可选） ────────────────────────────
+    try:
+        enabled = str(get_setting("REDIS", "signal_state_buffer_enabled", "0") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if enabled:
+            sec_raw = get_setting("REDIS", "signal_state_flush_interval_seconds", "3")
+            try:
+                sec = int(float(sec_raw))
+            except Exception:
+                sec = 3
+            if sec < 1:
+                sec = 1
+            cfg = TaskConfig(
+                task_id="task_signal_state_flush",
+                task_name="信号 state 缓冲落库（interval）",
+                module_path="tasks.signal_state_flush",
+                function_name="run_signal_state_flush_job",
+                trigger_type=TriggerType.INTERVAL,
+                trigger_args={"seconds": sec},
+                enabled=True,
+                max_instances=1,
+                misfire_grace_time=30,
+                coalesce=True,
+                description="当开启 REDIS.signal_state_buffer_enabled 时，将 signal_rule_state 的写入先缓冲到 Redis，再定时批量落库。",
+            )
+            db_tm3 = Database.Create()
+            try:
+                taskManager.persist_task_to_database(db_tm3, cfg)
+                taskManager.load_configs_from_database(db_tm3)
+            finally:
+                db_tm3.close()
+    except Exception as e:
+        logger.error("初始化 signal_state_flush 任务失败: %s", e, exc_info=True)
+
+    # 启动后先跑一次（force=true）：让新建/刚启用的规则立刻生效（非交易时间也可用于验证）
+    try:
+        from signals.signal_notify_runner import run_signal_notify_tick
+
+        st = run_signal_notify_tick(force=True)
+        logger.info("启动首轮 signal_notify 扫描完成: %s", st)
+    except Exception as e:
+        logger.warning("启动首轮 signal_notify 扫描失败: %s", e, exc_info=True)
+
     taskManager.start()
+
+    app.config['TASK_MANAGER'] = taskManager
 
     # 启动 NGA 爬虫：仅对数据库中 auto_run=1 的帖子进行监控
     if start_nga_monitor is not None:

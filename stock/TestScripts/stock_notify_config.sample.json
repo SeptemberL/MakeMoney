@@ -1,0 +1,19 @@
+{
+  "_comment": "复制为 stock_notify_config.json 或把字段粘贴到 stock_notify_card.html 的 NOTIFY_CONFIG 中",
+  "logoEmoji": "📊",
+  "title": "检测到价",
+  "subtitle": "Price level reached",
+  "badgeText": "信号",
+  "badgeStyle": "success",
+  "stockName": "示例科技",
+  "stockCode": "000001.SZ",
+  "rows": [
+    { "label": "采用策略", "value": "到价提醒 · 目标价突破" },
+    { "label": "当前价格", "value": "¥ 12.58", "style": "mono" },
+    { "label": "检测到价格", "value": "¥ 12.50", "style": "highlight" },
+    { "label": "触发条件", "value": "前复权价 ≥ 目标价" },
+    { "label": "信号类型", "value": "price_level_interval", "style": "accent" }
+  ],
+  "remark": "<strong>备注：</strong>可与 signal_notify 的 message_template 或推送 payload 对齐。",
+  "timestamp": "2026-04-07 14:32:08"
+}

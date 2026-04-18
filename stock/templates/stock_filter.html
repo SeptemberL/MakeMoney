@@ -88,6 +88,20 @@
                                         布林带3突破
                                     </label>
                                 </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="meirenjianFilter" name="meirenjianFilter" value="MEIRENJIAN">
+                                    <label class="form-check-label" for="meirenjianFilter">
+                                        美人肩形态
+                                    </label>
+                                </div>
+                                <div class="row g-2 mt-2">
+                                    <div class="col-6">
+                                        <input type="number" class="form-control" id="meirenjianMinScore" placeholder="美人肩 minScore(0~1) 默认0.6" step="0.05" min="0" max="1">
+                                    </div>
+                                    <div class="col-6">
+                                        <input type="number" class="form-control" id="meirenjianLookbackBars" placeholder="美人肩 lookbackBars 默认120" step="1" min="10">
+                                    </div>
+                                </div>
                             </div>
                             
                             <!-- 触发天数范围 -->
@@ -339,11 +353,26 @@
             if (bollChecked) {
                 filterSignal.push('BOLL');
             }
+            const meirenjianChecked = document.getElementById('meirenjianFilter').checked;
+            if (meirenjianChecked) {
+                filterSignal.push('MEIRENJIAN');
+            }
+
+            const signalParams = {};
+            if (meirenjianChecked) {
+                const p = {};
+                const minScoreRaw = (document.getElementById('meirenjianMinScore').value || '').trim();
+                const lookbackBarsRaw = (document.getElementById('meirenjianLookbackBars').value || '').trim();
+                if (minScoreRaw !== '') p.minScore = Number(minScoreRaw);
+                if (lookbackBarsRaw !== '') p.lookbackBars = Number(lookbackBarsRaw);
+                signalParams.MEIRENJIAN = p;
+            }
             
             const filters = {
                 market: market,
                 period: period,
                 filterSignal: filterSignal,
+                signalParams: JSON.stringify(signalParams),
                 dayRange: document.getElementById('dayRange').value,
                 priceMin: document.getElementById('priceMin').value,
                 priceMax: document.getElementById('priceMax').value

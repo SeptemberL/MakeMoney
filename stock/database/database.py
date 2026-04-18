@@ -2,8 +2,11 @@ import os
 import sqlite3
 import logging
 import json
+from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 from config import Config
+from Managers.redis_kv import get_json as _redis_get_json, set_json as _redis_set_json, make_key as _redis_key
+from Managers.runtime_settings import get_setting as _rt_get_setting
 
 try:
     import mysql.connector
@@ -273,7 +276,110 @@ class Database:
             self._init_database_sqlite()
         else:
             self._init_database_mysql()
+        self.ensure_etf_basic_tables()
+        self.ensure_adj_factor_tables()
         self.migrate_positions_transactions_portfolio_user_id()
+
+    # ─────────────────────────── 场内 ETF 基础信息（MySQL/SQLite 双引擎一致） ────────────────────────────
+
+    def _create_etf_basic_tables_sqlite(self):
+        """场内 ETF 基金基础信息表（SQLite）。仅存基本信息，用于持仓录入/展示。"""
+        self.execute('''CREATE TABLE IF NOT EXISTS etf_basic (
+            code TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            market TEXT,
+            exchange TEXT,
+            list_date TEXT,
+            source TEXT DEFAULT 'manual',
+            raw_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        try:
+            self.execute("CREATE INDEX IF NOT EXISTS idx_etf_basic_market ON etf_basic (market)")
+        except Exception:
+            pass
+
+    def _create_etf_basic_tables_mysql(self):
+        """场内 ETF 基金基础信息表（MySQL）。与 SQLite 语义一致。"""
+        self.execute('''CREATE TABLE IF NOT EXISTS etf_basic (
+            code VARCHAR(32) PRIMARY KEY,
+            name VARCHAR(128) NOT NULL,
+            market VARCHAR(16) DEFAULT NULL,
+            exchange VARCHAR(16) DEFAULT NULL,
+            list_date VARCHAR(16) DEFAULT NULL,
+            source VARCHAR(32) DEFAULT 'manual',
+            raw_json JSON DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            KEY idx_etf_basic_market (market)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+
+    def ensure_etf_basic_tables(self):
+        """确保 etf_basic 表存在（不依赖 init_database）。"""
+        if self.is_sqlite:
+            self._create_etf_basic_tables_sqlite()
+        else:
+            self._create_etf_basic_tables_mysql()
+
+    def get_etf_basic_by_code(self, code: str):
+        """按 code 查询 ETF 基础信息（不存在返回 None）。"""
+        self.ensure_etf_basic_tables()
+        c = (code or "").strip()
+        if not c:
+            return None
+        return self.fetch_one(
+            "SELECT code, name, market, exchange, list_date, source FROM etf_basic WHERE code=%s LIMIT 1",
+            (c,),
+        )
+
+    def upsert_etf_basic(
+        self,
+        *,
+        code: str,
+        name: str,
+        market: str | None = None,
+        exchange: str | None = None,
+        list_date: str | None = None,
+        source: str | None = None,
+        raw_json: str | None = None,
+    ) -> bool:
+        """写入或更新 ETF 基础信息（幂等）。"""
+        self.ensure_etf_basic_tables()
+        c = (code or "").strip()
+        n = (name or "").strip()
+        if not c or not n:
+            raise ValueError("etf_basic.code/name 不能为空")
+        src = (source or "manual").strip() or "manual"
+        if self.is_sqlite:
+            self.execute(
+                '''INSERT INTO etf_basic (code, name, market, exchange, list_date, source, raw_json, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                   ON CONFLICT(code) DO UPDATE SET
+                       name=excluded.name,
+                       market=excluded.market,
+                       exchange=excluded.exchange,
+                       list_date=excluded.list_date,
+                       source=excluded.source,
+                       raw_json=excluded.raw_json,
+                       updated_at=CURRENT_TIMESTAMP''',
+                (c, n, market, exchange, list_date, src, raw_json),
+            )
+        else:
+            self.execute(
+                '''INSERT INTO etf_basic (code, name, market, exchange, list_date, source, raw_json)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE
+                       name=VALUES(name),
+                       market=VALUES(market),
+                       exchange=VALUES(exchange),
+                       list_date=VALUES(list_date),
+                       source=VALUES(source),
+                       raw_json=VALUES(raw_json),
+                       updated_at=CURRENT_TIMESTAMP''',
+                (c, n, market, exchange, list_date, src, raw_json),
+            )
+        return True
 
     def migrate_positions_transactions_portfolio_user_id(self):
         """旧库为持仓/流水/组合表增加 user_id，历史数据归到首个用户（或默认 1）。"""
@@ -341,6 +447,7 @@ class Database:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(stock_code, trade_date)
         )''')
+        self._create_adj_factor_tables_sqlite()
         self.execute('''CREATE TABLE IF NOT EXISTS alert_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             stock_code TEXT NOT NULL,
@@ -401,6 +508,27 @@ class Database:
         self._create_signal_rule_tables_sqlite()
         self._create_signal_rule_state_tables_sqlite()
         self._create_user_watchlist_tables_sqlite()
+        self._create_scheduled_task_tables_sqlite()
+        self._create_system_settings_tables_sqlite()
+
+    def _create_scheduled_task_tables_sqlite(self):
+        """APScheduler 业务任务配置（SQLite），与 MySQL 语义一致。"""
+        self.execute('''CREATE TABLE IF NOT EXISTS scheduled_task (
+            task_id TEXT PRIMARY KEY,
+            task_name TEXT NOT NULL,
+            module_path TEXT NOT NULL,
+            function_name TEXT NOT NULL,
+            trigger_type TEXT NOT NULL,
+            trigger_args TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            run_once_per_day INTEGER NOT NULL DEFAULT 0,
+            max_instances INTEGER NOT NULL DEFAULT 1,
+            misfire_grace_time INTEGER,
+            job_coalesce INTEGER NOT NULL DEFAULT 1,
+            description TEXT,
+            args_json TEXT,
+            kwargs_json TEXT
+        )''')
 
     def _create_user_watchlist_tables_sqlite(self):
         """用户自选列表（SQLite），按账号跨设备同步"""
@@ -425,6 +553,13 @@ class Database:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             group_id INTEGER NOT NULL,
             list_type VARCHAR(32) NOT NULL DEFAULT 'weixin',
+            name VARCHAR(128) DEFAULT NULL,
+            send_mode VARCHAR(32) NOT NULL DEFAULT '',
+            chat_id VARCHAR(128) DEFAULT NULL,
+            webhook_url TEXT DEFAULT NULL,
+            sign_secret TEXT DEFAULT NULL,
+            app_id VARCHAR(128) DEFAULT NULL,
+            app_secret TEXT DEFAULT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(list_type, group_id)
@@ -477,6 +612,7 @@ class Database:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY uq_code_date (stock_code, trade_date)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+        self._create_adj_factor_tables_mysql()
         self.execute('''CREATE TABLE IF NOT EXISTS alert_history (
             id INT AUTO_INCREMENT PRIMARY KEY,
             stock_code VARCHAR(32) NOT NULL,
@@ -542,6 +678,465 @@ class Database:
         self._create_signal_rule_tables_mysql()
         self._create_signal_rule_state_tables_mysql()
         self._create_user_watchlist_tables_mysql()
+        self._create_scheduled_task_tables_mysql()
+        self._create_system_settings_tables_mysql()
+
+    # ─────────────────────────── 系统设置（DB 优先） ────────────────────────────
+
+    def _create_system_settings_tables_sqlite(self):
+        """系统设置键值表（SQLite），用于 settings_console 等页面持久化配置。"""
+        self.execute('''CREATE TABLE IF NOT EXISTS system_settings (
+            section TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (section, key)
+        )''')
+
+    def _create_system_settings_tables_mysql(self):
+        """系统设置键值表（MySQL），与 SQLite 语义一致。"""
+        self.execute('''CREATE TABLE IF NOT EXISTS system_settings (
+            section VARCHAR(64) NOT NULL,
+            `key` VARCHAR(128) NOT NULL,
+            value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (section, `key`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+
+    # ─────────────────────────── 复权因子（MySQL/SQLite 双引擎一致） ────────────────────────────
+
+    def _create_adj_factor_tables_sqlite(self):
+        """复权因子表（SQLite）。按交易日存前复权/后复权因子（尽量每天有值）。"""
+        self.execute('''CREATE TABLE IF NOT EXISTS adj_factor (
+            stock_code TEXT NOT NULL,
+            trade_date DATE NOT NULL,
+            -- 兼容字段：历史上 adj_factor 表示前复权因子（qfq_factor）
+            adj_factor REAL,
+            qfq_factor REAL,
+            hfq_factor REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (stock_code, trade_date)
+        )''')
+        try:
+            self.execute("CREATE INDEX IF NOT EXISTS idx_adj_factor_code_date ON adj_factor (stock_code, trade_date)")
+        except Exception:
+            pass
+
+    def _create_adj_factor_tables_mysql(self):
+        """复权因子表（MySQL）。与 SQLite 语义一致。"""
+        self.execute('''CREATE TABLE IF NOT EXISTS adj_factor (
+            stock_code VARCHAR(32) NOT NULL,
+            trade_date DATE NOT NULL,
+            -- 兼容字段：历史上 adj_factor 表示前复权因子（qfq_factor）
+            adj_factor DOUBLE NULL,
+            qfq_factor DOUBLE NULL,
+            hfq_factor DOUBLE NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (stock_code, trade_date),
+            KEY idx_adj_factor_code_date (stock_code, trade_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+
+    def ensure_adj_factor_tables(self):
+        """确保 adj_factor 表存在（不依赖 init_database）。"""
+        if self.is_sqlite:
+            self._create_adj_factor_tables_sqlite()
+        else:
+            self._create_adj_factor_tables_mysql()
+        self._migrate_adj_factor_schema()
+
+    def _migrate_adj_factor_schema(self):
+        """
+        复权因子表迁移：
+        - 新增 qfq_factor / hfq_factor
+        - 将历史 adj_factor 回填到 qfq_factor（若为空）
+        """
+        try:
+            if not self.column_exists("adj_factor", "qfq_factor"):
+                if self.is_sqlite:
+                    self.execute("ALTER TABLE adj_factor ADD COLUMN qfq_factor REAL")
+                else:
+                    self.execute("ALTER TABLE adj_factor ADD COLUMN qfq_factor DOUBLE NULL")
+            if not self.column_exists("adj_factor", "hfq_factor"):
+                if self.is_sqlite:
+                    self.execute("ALTER TABLE adj_factor ADD COLUMN hfq_factor REAL")
+                else:
+                    self.execute("ALTER TABLE adj_factor ADD COLUMN hfq_factor DOUBLE NULL")
+        except Exception:
+            # 迁移尽力而为，不阻断主流程
+            pass
+
+        # 回填：qfq_factor 为空时用 adj_factor
+        try:
+            if self.column_exists("adj_factor", "adj_factor") and self.column_exists("adj_factor", "qfq_factor"):
+                if self.is_sqlite:
+                    self.execute(
+                        "UPDATE adj_factor SET qfq_factor = adj_factor "
+                        "WHERE qfq_factor IS NULL AND adj_factor IS NOT NULL"
+                    )
+                else:
+                    self.execute(
+                        "UPDATE adj_factor SET qfq_factor = adj_factor "
+                        "WHERE qfq_factor IS NULL AND adj_factor IS NOT NULL"
+                    )
+        except Exception:
+            pass
+
+    def get_latest_adj_factor_row(self, stock_code: str):
+        """返回某股票最新一条复权因子行：{trade_date, qfq_factor, hfq_factor, adj_factor}，不存在返回 None。"""
+        self.ensure_adj_factor_tables()
+        sc = (stock_code or "").strip()
+        if not sc:
+            return None
+        return self.fetch_one(
+            "SELECT trade_date, adj_factor, qfq_factor, hfq_factor "
+            "FROM adj_factor WHERE stock_code = %s ORDER BY trade_date DESC LIMIT 1",
+            (sc,),
+        )
+
+    def upsert_adj_factor(
+        self,
+        stock_code: str,
+        trade_date: str,
+        adj_factor: float,
+        qfq_factor: float | None = None,
+        hfq_factor: float | None = None,
+    ) -> bool:
+        """幂等写入一条复权因子（同一股票同一交易日覆盖更新）。"""
+        self.ensure_adj_factor_tables()
+        sc = (stock_code or "").strip()
+        td = (trade_date or "").strip()
+        if not sc or not td:
+            raise ValueError("stock_code/trade_date 不能为空")
+        # 兼容：若只传了 adj_factor，则视为 qfq_factor
+        af = float(adj_factor) if adj_factor is not None else None
+        qfq = float(qfq_factor) if qfq_factor is not None else (float(af) if af is not None else None)
+        hfq = float(hfq_factor) if hfq_factor is not None else None
+        if self.is_sqlite:
+            self.execute(
+                '''INSERT INTO adj_factor (stock_code, trade_date, adj_factor, qfq_factor, hfq_factor, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                   ON CONFLICT(stock_code, trade_date) DO UPDATE SET
+                       adj_factor=excluded.adj_factor,
+                       qfq_factor=excluded.qfq_factor,
+                       hfq_factor=excluded.hfq_factor,
+                       updated_at=CURRENT_TIMESTAMP''',
+                (sc, td, qfq, qfq, hfq),
+            )
+        else:
+            self.execute(
+                '''INSERT INTO adj_factor (stock_code, trade_date, adj_factor, qfq_factor, hfq_factor)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE
+                       adj_factor=VALUES(adj_factor),
+                       qfq_factor=VALUES(qfq_factor),
+                       hfq_factor=VALUES(hfq_factor),
+                       updated_at=CURRENT_TIMESTAMP''',
+                (sc, td, qfq, qfq, hfq),
+            )
+        return True
+
+    def get_max_adj_factor_trade_date(self, stock_code: str):
+        """返回某股票 adj_factor 表中最大的 trade_date（字符串），无数据返回 None。"""
+        self.ensure_adj_factor_tables()
+        sc = (stock_code or "").strip()
+        if not sc:
+            return None
+        row = self.fetch_one(
+            "SELECT MAX(trade_date) AS d FROM adj_factor WHERE stock_code = %s",
+            (sc,),
+        )
+        if not row:
+            return None
+        v = row.get("d")
+        if v is None:
+            return None
+        # MySQL 可能返回 date/datetime；SQLite 多为 str
+        try:
+            return str(v)[:10]
+        except Exception:
+            return None
+
+    def get_adj_factors(
+        self,
+        *,
+        stock_codes: list[str],
+        start_trade_date: str,
+        end_trade_date: str,
+    ) -> list[dict]:
+        """
+        批量读取 adj_factor 区间数据。
+
+        Returns:
+            rows: [{stock_code, trade_date, adj_factor}, ...]
+        """
+        self.ensure_adj_factor_tables()
+        codes = [str(c).strip() for c in (stock_codes or []) if str(c).strip()]
+        if not codes:
+            return []
+        start_td = str(start_trade_date or "").strip()
+        end_td = str(end_trade_date or "").strip()
+        if not start_td or not end_td:
+            raise ValueError("start_trade_date/end_trade_date 不能为空")
+
+        select_cols = "stock_code, trade_date, adj_factor, qfq_factor, hfq_factor"
+
+        if self.is_sqlite:
+            placeholders = ",".join(["?"] * len(codes))
+            sql = (
+                f"SELECT {select_cols} FROM adj_factor "
+                f"WHERE stock_code IN ({placeholders}) AND trade_date BETWEEN ? AND ?"
+            )
+            params = tuple(codes + [start_td, end_td])
+            return self.fetch_all(sql, params) or []
+
+        placeholders = ",".join(["%s"] * len(codes))
+        sql = (
+            f"SELECT {select_cols} FROM adj_factor "
+            f"WHERE stock_code IN ({placeholders}) AND trade_date BETWEEN %s AND %s"
+        )
+        params = tuple(codes + [start_td, end_td])
+        return self.fetch_all(sql, params) or []
+
+    @staticmethod
+    def stock_table_name_for_code(code: str) -> str:
+        """
+        与 StockListManager._get_stock_table_name 保持一致：
+        - 6/9 开头视为 SH，否则 SZ
+        - 表名格式：stock_{code}_{SH|SZ}
+        """
+        c = str(code or "").strip()
+        if "." in c:
+            c = c.split(".", 1)[0].strip()
+        if not c:
+            raise ValueError("code 不能为空")
+        market = "SH" if c.startswith(("6", "9")) else "SZ"
+        return f"stock_{c}_{market}"
+
+    def get_latest_daily_close_map(self, stock_codes: list[str]) -> dict[str, dict]:
+        """
+        批量读取每只股票“最新交易日”的 raw close。
+
+        Returns:
+            {stock_code: {"trade_date": "YYYY-MM-DD", "close": float}}
+        """
+        out: dict[str, dict] = {}
+        codes = [str(c).strip() for c in (stock_codes or []) if str(c).strip()]
+        if not codes:
+            return out
+
+        # Redis 缓存（可开关）：适用于信号扫描等“频繁读、短 TTL”的场景
+        try:
+            ttl_raw = _rt_get_setting("REDIS", "latest_close_ttl_seconds", "0")
+            ttl = int(float(ttl_raw)) if ttl_raw is not None else 0
+        except Exception:
+            ttl = 0
+        cache_key = None
+        if ttl > 0:
+            try:
+                cache_key = _redis_key(
+                    "cache",
+                    "latest_daily_close_map",
+                    self.db_type,
+                    ",".join(sorted(codes)),
+                )
+                cached = _redis_get_json(cache_key)
+                if isinstance(cached, dict) and cached:
+                    return cached
+            except Exception:
+                cache_key = None
+
+        for sc in codes:
+            try:
+                table = self.stock_table_name_for_code(sc)
+            except Exception:
+                continue
+            if not self.table_exists(table):
+                continue
+            row = self.fetch_one(
+                f"SELECT trade_date, close FROM {table} ORDER BY trade_date DESC LIMIT 1"
+            )
+            if not row:
+                continue
+            td = row.get("trade_date")
+            close_v = row.get("close")
+            if td is None or close_v is None:
+                continue
+            try:
+                out[sc] = {"trade_date": str(td)[:10], "close": float(close_v)}
+            except Exception:
+                continue
+
+        if cache_key and out:
+            try:
+                _redis_set_json(cache_key, out, ttl_seconds=ttl)
+            except Exception:
+                pass
+        return out
+
+    def ensure_system_settings_tables(self):
+        """确保 system_settings 表存在（不依赖 init_database）。"""
+        if self.is_sqlite:
+            self._create_system_settings_tables_sqlite()
+        else:
+            self._create_system_settings_tables_mysql()
+        self._migrate_system_settings_schema()
+
+    def _system_settings_columns(self) -> tuple[str, str, str]:
+        """
+        返回 system_settings 的列名映射：(section_col, key_col, value_col)。
+        兼容历史表结构：
+        - 新：section + key + value
+        - 旧：group_name + setting_key + setting_value（或 val）
+        """
+        # section/group
+        if self.column_exists("system_settings", "section"):
+            section_col = "section"
+        elif self.column_exists("system_settings", "group_name"):
+            section_col = "group_name"
+        else:
+            section_col = "section"
+
+        # key
+        if self.column_exists("system_settings", "key"):
+            key_col = "key"
+        elif self.column_exists("system_settings", "setting_key"):
+            key_col = "setting_key"
+        else:
+            key_col = "key"
+
+        # value
+        if self.column_exists("system_settings", "value"):
+            value_col = "value"
+        elif self.column_exists("system_settings", "setting_value"):
+            value_col = "setting_value"
+        elif self.column_exists("system_settings", "val"):
+            value_col = "val"
+        else:
+            value_col = "value"
+
+        return section_col, key_col, value_col
+
+    def _quote_ident(self, ident: str) -> str:
+        """最小化标识符 quoting：仅对 key 这类可能冲突的列做处理。"""
+        if not ident:
+            return ident
+        if self.is_sqlite:
+            # SQLite 中 key 不强制保留；用双引号也可，但保持简单
+            return ident
+        # MySQL
+        if ident.lower() in ("key",):
+            return f"`{ident}`"
+        return ident
+
+    def _migrate_system_settings_schema(self):
+        """
+        兼容旧版本 system_settings 表结构（历史上可能不存在 value 字段）。
+        必须同时兼容 MySQL + SQLite（语义一致）。
+        """
+        try:
+            if not self.table_exists("system_settings"):
+                return
+
+            # 若已是旧结构（group_name/setting_key/setting_value），不强行改表，只在查询/写入时做适配
+            # 若缺少 value 字段但也不存在 setting_value/val，则补一个 value 字段以保证可用
+            has_value = self.column_exists("system_settings", "value")
+            has_legacy_value = self.column_exists("system_settings", "setting_value") or self.column_exists(
+                "system_settings", "val"
+            )
+            if (not has_value) and (not has_legacy_value):
+                if self.is_sqlite:
+                    self.execute("ALTER TABLE system_settings ADD COLUMN value TEXT")
+                else:
+                    self.execute("ALTER TABLE system_settings ADD COLUMN value TEXT")
+        except Exception as e:
+            # 迁移失败不应影响主流程，尽力而为
+            logger.warning("system_settings 表结构迁移失败（已忽略）: %s", e)
+
+    def get_system_setting(self, section: str, key: str):
+        """读取单条系统设置；不存在返回 None。"""
+        self.ensure_system_settings_tables()
+        sec = (section or '').strip()
+        k = (key or '').strip()
+        if not sec or not k:
+            return None
+        section_col, key_col, value_col = self._system_settings_columns()
+        row = self.fetch_one(
+            f'SELECT {self._quote_ident(value_col)} AS value FROM system_settings '
+            f'WHERE {self._quote_ident(section_col)} = %s AND {self._quote_ident(key_col)} = %s LIMIT 1',
+            (sec, k),
+        )
+        if not row:
+            return None
+        return row.get('value')
+
+    def upsert_system_setting(self, section: str, key: str, value) -> bool:
+        """写入或更新单条系统设置（value 统一存 TEXT）。"""
+        self.ensure_system_settings_tables()
+        sec = (section or '').strip()
+        k = (key or '').strip()
+        if not sec or not k:
+            raise ValueError('section/key 不能为空')
+        v = None if value is None else str(value)
+        section_col, key_col, value_col = self._system_settings_columns()
+        sec_q = self._quote_ident(section_col)
+        key_q = self._quote_ident(key_col)
+        val_q = self._quote_ident(value_col)
+        if self.is_sqlite:
+            self.execute(
+                f'''INSERT INTO system_settings ({sec_q}, {key_q}, {val_q}, updated_at)
+                   VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                   ON CONFLICT({sec_q}, {key_q}) DO UPDATE SET
+                       {val_q}=excluded.{val_q},
+                       updated_at=CURRENT_TIMESTAMP''',
+                (sec, k, v),
+            )
+        else:
+            self.execute(
+                f'''INSERT INTO system_settings ({sec_q}, {key_q}, {val_q})
+                   VALUES (%s, %s, %s)
+                   ON DUPLICATE KEY UPDATE {val_q}=VALUES({val_q}), updated_at=CURRENT_TIMESTAMP''',
+                (sec, k, v),
+            )
+        return True
+
+    def _create_scheduled_task_tables_mysql(self):
+        """APScheduler 业务任务配置（MySQL）。"""
+        self.execute('''CREATE TABLE IF NOT EXISTS scheduled_task (
+            task_id VARCHAR(128) PRIMARY KEY,
+            task_name VARCHAR(256) NOT NULL,
+            module_path VARCHAR(256) NOT NULL,
+            function_name VARCHAR(128) NOT NULL,
+            trigger_type VARCHAR(32) NOT NULL,
+            trigger_args TEXT NOT NULL,
+            enabled TINYINT NOT NULL DEFAULT 1,
+            run_once_per_day TINYINT NOT NULL DEFAULT 0,
+            max_instances INT NOT NULL DEFAULT 1,
+            misfire_grace_time INT NULL,
+            job_coalesce TINYINT NOT NULL DEFAULT 1,
+            description TEXT,
+            args_json TEXT,
+            kwargs_json TEXT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+
+    def _create_scheduled_task_run_daily_tables_sqlite(self):
+        """每日只跑一次：任务运行记录（SQLite）。"""
+        self.execute('''CREATE TABLE IF NOT EXISTS scheduled_task_run_daily (
+            task_id TEXT NOT NULL,
+            run_date TEXT NOT NULL,
+            ran_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (task_id, run_date)
+        )''')
+
+    def _create_scheduled_task_run_daily_tables_mysql(self):
+        """每日只跑一次：任务运行记录（MySQL）。"""
+        self.execute('''CREATE TABLE IF NOT EXISTS scheduled_task_run_daily (
+            task_id VARCHAR(128) NOT NULL,
+            run_date DATE NOT NULL,
+            ran_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (task_id, run_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
 
     def _create_user_watchlist_tables_mysql(self):
         """用户自选列表（MySQL）"""
@@ -564,6 +1159,13 @@ class Database:
             id INT AUTO_INCREMENT PRIMARY KEY,
             group_id INT NOT NULL,
             list_type VARCHAR(32) NOT NULL DEFAULT 'weixin',
+            name VARCHAR(128) DEFAULT NULL,
+            send_mode VARCHAR(32) NOT NULL DEFAULT '',
+            chat_id VARCHAR(128) DEFAULT NULL,
+            webhook_url TEXT DEFAULT NULL,
+            sign_secret TEXT DEFAULT NULL,
+            app_id VARCHAR(128) DEFAULT NULL,
+            app_secret TEXT DEFAULT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uq_type_group (list_type, group_id)
@@ -656,6 +1258,42 @@ class Database:
             self._create_message_group_tables_sqlite()
         else:
             self._create_message_group_tables_mysql()
+        # 兼容旧库：补列（MySQL/SQLite 语义保持一致）
+        try:
+            if not self.column_exists("message_group", "name"):
+                self.execute("ALTER TABLE message_group ADD COLUMN name VARCHAR(128) DEFAULT NULL")
+        except Exception as e:
+            logger.warning("message_group 补列 name 失败（已忽略）: %s", e)
+        try:
+            if not self.column_exists("message_group", "send_mode"):
+                self.execute("ALTER TABLE message_group ADD COLUMN send_mode VARCHAR(32) NOT NULL DEFAULT ''")
+        except Exception as e:
+            logger.warning("message_group 补列 send_mode 失败（已忽略）: %s", e)
+        try:
+            if not self.column_exists("message_group", "chat_id"):
+                self.execute("ALTER TABLE message_group ADD COLUMN chat_id VARCHAR(128) DEFAULT NULL")
+        except Exception as e:
+            logger.warning("message_group 补列 chat_id 失败（已忽略）: %s", e)
+        try:
+            if not self.column_exists("message_group", "webhook_url"):
+                self.execute("ALTER TABLE message_group ADD COLUMN webhook_url TEXT DEFAULT NULL")
+        except Exception as e:
+            logger.warning("message_group 补列 webhook_url 失败（已忽略）: %s", e)
+        try:
+            if not self.column_exists("message_group", "sign_secret"):
+                self.execute("ALTER TABLE message_group ADD COLUMN sign_secret TEXT DEFAULT NULL")
+        except Exception as e:
+            logger.warning("message_group 补列 sign_secret 失败（已忽略）: %s", e)
+        try:
+            if not self.column_exists("message_group", "app_id"):
+                self.execute("ALTER TABLE message_group ADD COLUMN app_id VARCHAR(128) DEFAULT NULL")
+        except Exception as e:
+            logger.warning("message_group 补列 app_id 失败（已忽略）: %s", e)
+        try:
+            if not self.column_exists("message_group", "app_secret"):
+                self.execute("ALTER TABLE message_group ADD COLUMN app_secret TEXT DEFAULT NULL")
+        except Exception as e:
+            logger.warning("message_group 补列 app_secret 失败（已忽略）: %s", e)
 
     def ensure_signal_rule_tables(self):
         """确保 signal_rule 表存在（不依赖 init_database）"""
@@ -678,6 +1316,157 @@ class Database:
             self._create_user_watchlist_tables_sqlite()
         else:
             self._create_user_watchlist_tables_mysql()
+
+    def ensure_scheduled_task_tables(self):
+        """确保 scheduled_task 表存在（APScheduler 任务配置）。"""
+        if self.is_sqlite:
+            self._create_scheduled_task_tables_sqlite()
+        else:
+            self._create_scheduled_task_tables_mysql()
+        # 兼容旧库：补列
+        try:
+            if not self.column_exists("scheduled_task", "run_once_per_day"):
+                if self.is_sqlite:
+                    self.execute("ALTER TABLE scheduled_task ADD COLUMN run_once_per_day INTEGER NOT NULL DEFAULT 0")
+                else:
+                    self.execute("ALTER TABLE scheduled_task ADD COLUMN run_once_per_day TINYINT NOT NULL DEFAULT 0")
+        except Exception as e:
+            logger.warning("scheduled_task 补列 run_once_per_day 失败（已忽略）: %s", e)
+
+    def ensure_scheduled_task_run_daily_tables(self):
+        """确保 scheduled_task_run_daily 表存在（每日只跑一次运行记录）。"""
+        if self.is_sqlite:
+            self._create_scheduled_task_run_daily_tables_sqlite()
+        else:
+            self._create_scheduled_task_run_daily_tables_mysql()
+
+    def has_scheduled_task_run_today(self, task_id: str, today: str | None = None) -> bool:
+        """判断 task_id 在今天是否已成功跑过（存在记录即视为已跑）。"""
+        self.ensure_scheduled_task_run_daily_tables()
+        tid = (task_id or "").strip()
+        if not tid:
+            return False
+        if today is None:
+            today = datetime.now().strftime("%Y-%m-%d")
+        row = self.fetch_one(
+            "SELECT 1 AS x FROM scheduled_task_run_daily WHERE task_id = %s AND run_date = %s LIMIT 1",
+            (tid, today),
+        )
+        return row is not None
+
+    def mark_scheduled_task_ran_today(self, task_id: str, today: str | None = None) -> bool:
+        """写入今日已执行标记（幂等）。"""
+        self.ensure_scheduled_task_run_daily_tables()
+        tid = (task_id or "").strip()
+        if not tid:
+            return False
+        if today is None:
+            today = datetime.now().strftime("%Y-%m-%d")
+        self.execute(
+            "INSERT IGNORE INTO scheduled_task_run_daily (task_id, run_date) VALUES (%s, %s)",
+            (tid, today),
+        )
+        return True
+
+    def count_scheduled_tasks(self) -> int:
+        """scheduled_task 行数。"""
+        self.ensure_scheduled_task_tables()
+        row = self.fetch_one('SELECT COUNT(*) AS c FROM scheduled_task')
+        if not row:
+            return 0
+        v = row.get('c')
+        return int(v) if v is not None else 0
+
+    def scheduled_task_exists(self, task_id: str) -> bool:
+        self.ensure_scheduled_task_tables()
+        tid = (task_id or '').strip()
+        if not tid:
+            return False
+        row = self.fetch_one(
+            'SELECT 1 AS x FROM scheduled_task WHERE task_id = %s LIMIT 1',
+            (tid,),
+        )
+        return row is not None
+
+    def fetch_all_scheduled_tasks(self):
+        """返回 scheduled_task 全部行（dict），按 task_id 排序。"""
+        self.ensure_scheduled_task_tables()
+        return self.fetch_all(
+            'SELECT task_id, task_name, module_path, function_name, trigger_type, trigger_args, '
+            'enabled, run_once_per_day, max_instances, misfire_grace_time, job_coalesce, description, args_json, kwargs_json '
+            'FROM scheduled_task ORDER BY task_id ASC'
+        ) or []
+
+    def upsert_scheduled_task(self, task_dict: dict) -> bool:
+        """
+        插入或更新一条任务配置。task_dict 与 tasks_config.yaml 中单条结构一致，
+        trigger_args 可为 dict；args / kwargs 可选。
+        """
+        self.ensure_scheduled_task_tables()
+        tid = (task_dict.get('task_id') or '').strip()
+        if not tid:
+            raise ValueError('task_id 不能为空')
+        ta = task_dict.get('trigger_args')
+        if isinstance(ta, str):
+            ta = json.loads(ta) if ta.strip() else {}
+        if not isinstance(ta, dict):
+            ta = {}
+        trigger_args_s = json.dumps(ta, ensure_ascii=False)
+        args = task_dict.get('args', ())
+        if isinstance(args, list):
+            args = tuple(args)
+        kwargs = task_dict.get('kwargs') if isinstance(task_dict.get('kwargs'), dict) else {}
+        args_s = json.dumps(list(args), ensure_ascii=False) if args else None
+        kwargs_s = json.dumps(kwargs, ensure_ascii=False)
+        enabled = 1 if task_dict.get('enabled', True) else 0
+        run_once = 1 if task_dict.get('run_once_per_day', False) else 0
+        job_coalesce = 1 if task_dict.get('coalesce', True) else 0
+        mg = task_dict.get('misfire_grace_time')
+        if mg is not None:
+            mg = int(mg)
+        max_inst = int(task_dict.get('max_instances', 1))
+        desc = task_dict.get('description') or ''
+        tname = (task_dict.get('task_name') or tid).strip()
+        mp = (task_dict.get('module_path') or '').strip()
+        fn = (task_dict.get('function_name') or '').strip()
+        tt = (task_dict.get('trigger_type') or 'cron').strip()
+        if self.is_sqlite:
+            sql = '''INSERT OR REPLACE INTO scheduled_task (
+                task_id, task_name, module_path, function_name, trigger_type, trigger_args,
+                enabled, run_once_per_day, max_instances, misfire_grace_time, job_coalesce, description, args_json, kwargs_json
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)'''
+            self.execute(
+                sql,
+                (
+                    tid, tname, mp, fn, tt, trigger_args_s, enabled, run_once, max_inst, mg, job_coalesce, desc,
+                    args_s, kwargs_s,
+                ),
+            )
+        else:
+            sql = '''INSERT INTO scheduled_task (
+                task_id, task_name, module_path, function_name, trigger_type, trigger_args,
+                enabled, run_once_per_day, max_instances, misfire_grace_time, job_coalesce, description, args_json, kwargs_json
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                task_name=VALUES(task_name), module_path=VALUES(module_path), function_name=VALUES(function_name),
+                trigger_type=VALUES(trigger_type), trigger_args=VALUES(trigger_args), enabled=VALUES(enabled),
+                run_once_per_day=VALUES(run_once_per_day),
+                max_instances=VALUES(max_instances), misfire_grace_time=VALUES(misfire_grace_time),
+                job_coalesce=VALUES(job_coalesce), description=VALUES(description),
+                args_json=VALUES(args_json), kwargs_json=VALUES(kwargs_json)'''
+            self.execute(
+                sql,
+                (
+                    tid, tname, mp, fn, tt, trigger_args_s, enabled, run_once, max_inst, mg, job_coalesce, desc,
+                    args_s, kwargs_s,
+                ),
+            )
+        return True
+
+    def delete_scheduled_task(self, task_id: str) -> bool:
+        self.ensure_scheduled_task_tables()
+        self.execute('DELETE FROM scheduled_task WHERE task_id = %s', ((task_id or '').strip(),))
+        return True
 
     def get_user_watchlist(self, user_id: int):
         """返回当前用户的自选列表，按 sort_order 排序。"""
@@ -713,6 +1502,45 @@ class Database:
             )
             order += 1
         return True
+
+    @staticmethod
+    def _user_watchlist_basic_code(code: str) -> str:
+        """与前端 normalizeBasicKey 一致：取点号前一段，用于 600000 / 600000.SH 等同码匹配。"""
+        c = str(code or '').strip()
+        if not c:
+            return ''
+        return c.split('.', 1)[0].strip()
+
+    def remove_user_watchlist_item(self, user_id: int, stock_code: str) -> int:
+        """删除当前用户自选中的一条；先精确匹配 stock_code，再按 basic code 匹配。返回删除行数。"""
+        self.ensure_user_watchlist_tables()
+        uid = int(user_id)
+        sc = str(stock_code or '').strip()
+        if not sc:
+            return 0
+        cursor = self.execute(
+            'DELETE FROM user_watchlist WHERE user_id = %s AND stock_code = %s',
+            (uid, sc),
+        )
+        n = int(getattr(cursor, 'rowcount', 0) or 0)
+        if n:
+            return n
+        basic = Database._user_watchlist_basic_code(sc)
+        if not basic:
+            return 0
+        rows = self.fetch_all(
+            'SELECT stock_code FROM user_watchlist WHERE user_id = %s',
+            (uid,),
+        )
+        for r in rows or []:
+            db_sc = str(r.get('stock_code') or '').strip()
+            if Database._user_watchlist_basic_code(db_sc) == basic:
+                cursor2 = self.execute(
+                    'DELETE FROM user_watchlist WHERE user_id = %s AND stock_code = %s',
+                    (uid, db_sc),
+                )
+                return int(getattr(cursor2, 'rowcount', 0) or 0)
+        return 0
 
     def create_signal_rule(self, stock_code, stock_name, group_ids_json, signal_type,
                            params_json, message_template, send_type='on_trigger',
@@ -848,56 +1676,97 @@ class Database:
         return True
 
     def get_all_message_groups(self, list_type=None):
-        """获取所有群组；list_type 为 None 时返回所有类型。返回 [{id, group_id, list_type, chat_list: [str]}, ...]"""
+        """获取所有群组；list_type 为 None 时返回所有类型。返回 [{id, group_id, list_type, chat_list: [str], name?, send_mode?, chat_id?, webhook_url?, sign_secret?, app_id?, app_secret?}, ...]"""
         self.ensure_message_group_tables()
         if list_type is not None:
             rows = self.fetch_all(
-                'SELECT id, group_id, list_type FROM message_group WHERE list_type = %s ORDER BY list_type, group_id',
+                'SELECT id, group_id, list_type, name, send_mode, chat_id, webhook_url, sign_secret, app_id, app_secret '
+                'FROM message_group WHERE list_type = %s ORDER BY list_type, group_id',
                 (list_type,)
             )
         else:
             rows = self.fetch_all(
-                'SELECT id, group_id, list_type FROM message_group ORDER BY list_type, group_id'
+                'SELECT id, group_id, list_type, name, send_mode, chat_id, webhook_url, sign_secret, app_id, app_secret '
+                'FROM message_group ORDER BY list_type, group_id'
             )
         out = []
         for r in rows:
-            chats = self.fetch_all(
-                'SELECT chat_name FROM message_group_chat WHERE group_id = %s ORDER BY sort_order, id',
-                (r['id'],)
-            )
+            lt = (r.get('list_type') or 'weixin')
+            chats = []
+            if lt in ('weixin', 'wx', 'wechat'):
+                chats = self.fetch_all(
+                    'SELECT chat_name FROM message_group_chat WHERE group_id = %s ORDER BY sort_order, id',
+                    (r['id'],)
+                )
             out.append({
                 'id': r['id'],
                 'group_id': r['group_id'],
-                'list_type': r['list_type'] or 'weixin',
+                'list_type': lt,
                 'chat_list': [c['chat_name'] for c in chats],
+                'name': r.get('name'),
+                'send_mode': r.get('send_mode') or '',
+                'chat_id': r.get('chat_id'),
+                'webhook_url': r.get('webhook_url'),
+                'sign_secret': r.get('sign_secret'),
+                'app_id': r.get('app_id'),
+                'app_secret': r.get('app_secret'),
             })
         return out
 
     def get_message_group_by_id(self, pk_id):
         """根据主键 id 获取一个群组（含 chat_list）"""
         self.ensure_message_group_tables()
-        r = self.fetch_one('SELECT id, group_id, list_type FROM message_group WHERE id = %s', (pk_id,))
+        r = self.fetch_one(
+            'SELECT id, group_id, list_type, name, send_mode, chat_id, webhook_url, sign_secret, app_id, app_secret '
+            'FROM message_group WHERE id = %s',
+            (pk_id,)
+        )
         if not r:
             return None
-        chats = self.fetch_all(
-            'SELECT chat_name FROM message_group_chat WHERE group_id = %s ORDER BY sort_order, id',
-            (r['id'],)
-        )
+        lt = (r.get('list_type') or 'weixin')
+        chats = []
+        if lt in ('weixin', 'wx', 'wechat'):
+            chats = self.fetch_all(
+                'SELECT chat_name FROM message_group_chat WHERE group_id = %s ORDER BY sort_order, id',
+                (r['id'],)
+            )
         return {
             'id': r['id'],
             'group_id': r['group_id'],
-            'list_type': r['list_type'] or 'weixin',
+            'list_type': lt,
             'chat_list': [c['chat_name'] for c in chats],
+            'name': r.get('name'),
+            'send_mode': r.get('send_mode') or '',
+            'chat_id': r.get('chat_id'),
+            'webhook_url': r.get('webhook_url'),
+            'sign_secret': r.get('sign_secret'),
+            'app_id': r.get('app_id'),
+            'app_secret': r.get('app_secret'),
         }
 
-    def create_message_group(self, group_id, list_type='weixin', chat_list=None):
-        """创建群组并写入 chat_list。返回 (True, id) 或 (False, error_msg)。"""
+    def create_message_group(
+        self,
+        group_id,
+        list_type='weixin',
+        chat_list=None,
+        *,
+        name=None,
+        send_mode=None,
+        chat_id=None,
+        webhook_url=None,
+        sign_secret=None,
+        app_id=None,
+        app_secret=None,
+    ):
+        """创建群组并写入 chat_list（仅 weixin）。返回 (True, id) 或 (False, error_msg)。"""
         self.ensure_message_group_tables()
         chat_list = chat_list or []
         try:
+            lt = (list_type or 'weixin')
             self.execute(
-                'INSERT INTO message_group (group_id, list_type) VALUES (%s, %s)',
-                (group_id, (list_type or 'weixin'))
+                'INSERT INTO message_group (group_id, list_type, name, send_mode, chat_id, webhook_url, sign_secret, app_id, app_secret) '
+                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)',
+                (group_id, lt, name, (send_mode or ''), chat_id, webhook_url, sign_secret, app_id, app_secret)
             )
             if self.is_sqlite:
                 row = self.fetch_one('SELECT last_insert_rowid() AS id')
@@ -905,11 +1774,12 @@ class Database:
             else:
                 row = self.fetch_one('SELECT LAST_INSERT_ID() AS id')
                 pk = row['id']
-            for i, name in enumerate(chat_list):
-                self.execute(
-                    'INSERT INTO message_group_chat (group_id, chat_name, sort_order) VALUES (%s, %s, %s)',
-                    (pk, (name or '').strip(), i)
-                )
+            if lt in ('weixin', 'wx', 'wechat'):
+                for i, chat_name in enumerate(chat_list):
+                    self.execute(
+                        'INSERT INTO message_group_chat (group_id, chat_name, sort_order) VALUES (%s, %s, %s)',
+                        (pk, (chat_name or '').strip(), i)
+                    )
             return (True, pk)
         except Exception as e:
             logger.error(f"创建 message_group 失败: {str(e)}")
@@ -917,10 +1787,27 @@ class Database:
                 return (False, '该类型下 group_id 已存在')
             return (False, str(e))
 
-    def update_message_group(self, pk_id, group_id=None, list_type=None, chat_list=None):
-        """更新群组。chat_list 若提供则整体替换。返回 (True, None) 或 (False, error_msg)。"""
+    def update_message_group(
+        self,
+        pk_id,
+        group_id=None,
+        list_type=None,
+        chat_list=None,
+        *,
+        name=None,
+        send_mode=None,
+        chat_id=None,
+        webhook_url=None,
+        sign_secret=None,
+        app_id=None,
+        app_secret=None,
+    ):
+        """更新群组。chat_list 若提供则整体替换（仅 weixin）。返回 (True, None) 或 (False, error_msg)。"""
         self.ensure_message_group_tables()
         try:
+            # 先拿当前类型，避免错误地操作 chat 表
+            cur = self.fetch_one('SELECT list_type FROM message_group WHERE id = %s', (pk_id,))
+            cur_lt = (cur.get('list_type') if isinstance(cur, dict) else None) or 'weixin'
             if group_id is not None:
                 self.execute(
                     'UPDATE message_group SET group_id = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s',
@@ -931,13 +1818,50 @@ class Database:
                     'UPDATE message_group SET list_type = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s',
                     (list_type, pk_id)
                 )
+                cur_lt = list_type or cur_lt
+            if name is not None:
+                self.execute(
+                    'UPDATE message_group SET name = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s',
+                    (name, pk_id)
+                )
+            if send_mode is not None:
+                self.execute(
+                    'UPDATE message_group SET send_mode = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s',
+                    (send_mode, pk_id)
+                )
+            if chat_id is not None:
+                self.execute(
+                    'UPDATE message_group SET chat_id = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s',
+                    (chat_id, pk_id)
+                )
+            if webhook_url is not None:
+                self.execute(
+                    'UPDATE message_group SET webhook_url = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s',
+                    (webhook_url, pk_id)
+                )
+            if sign_secret is not None:
+                self.execute(
+                    'UPDATE message_group SET sign_secret = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s',
+                    (sign_secret, pk_id)
+                )
+            if app_id is not None:
+                self.execute(
+                    'UPDATE message_group SET app_id = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s',
+                    (app_id, pk_id)
+                )
+            if app_secret is not None:
+                self.execute(
+                    'UPDATE message_group SET app_secret = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s',
+                    (app_secret, pk_id)
+                )
             if chat_list is not None:
-                self.execute('DELETE FROM message_group_chat WHERE group_id = %s', (pk_id,))
-                for i, name in enumerate(chat_list):
-                    self.execute(
-                        'INSERT INTO message_group_chat (group_id, chat_name, sort_order) VALUES (%s, %s, %s)',
-                        (pk_id, (name or '').strip(), i)
-                    )
+                if (cur_lt or 'weixin') in ('weixin', 'wx', 'wechat'):
+                    self.execute('DELETE FROM message_group_chat WHERE group_id = %s', (pk_id,))
+                    for i, chat_name in enumerate(chat_list):
+                        self.execute(
+                            'INSERT INTO message_group_chat (group_id, chat_name, sort_order) VALUES (%s, %s, %s)',
+                            (pk_id, (chat_name or '').strip(), i)
+                        )
             return (True, None)
         except Exception as e:
             logger.error(f"更新 message_group 失败: {str(e)}")

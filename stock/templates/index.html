@@ -132,7 +132,7 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav me-auto mb-2 mb-lg-0">
                     <li class="nav-item">
-                        <a class="nav-link active" href="/">首页</a>
+                        <a class="nav-link active" href="/dsaweb">首页</a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/indicator_manager">指标管理</a>
@@ -153,6 +153,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link" href="/dsaweb">
+                            <i class="fas fa-cubes"></i> DSA Web
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link" href="/market_open_score">
                             <i class="fas fa-sun"></i> 今日大盘开盘评分
                         </a>
@@ -164,12 +169,18 @@
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/watchlist">
-                            <i class="fas fa-list-check"></i> 自选列表
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" class="text-warning align-middle me-1" aria-hidden="true"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+                            自选列表
                         </a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/signal_notify">
                             <i class="fas fa-bell"></i> 信号通知
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/scheduled_tasks">
+                            <i class="fas fa-clock"></i> 定时任务
                         </a>
                     </li>
                 </ul>
@@ -224,11 +235,6 @@
                                 <i class="fas fa-database"></i> 更新所有股票数据
                             </button>
                             <span id="updateStocksStatus" class="ms-2"></span>
-                        </div>
-                        <div class="mb-3">
-                            <a href="/chat_groups" class="btn btn-info">
-                                <i class="fas fa-comments"></i> 聊天群管理
-                            </a>
                         </div>
                         <div class="mb-3">
                             <button type="button" class="btn btn-primary" id="updateStockListBtn" onclick="updateStockList()">

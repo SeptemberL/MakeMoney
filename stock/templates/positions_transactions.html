@@ -58,7 +58,7 @@
                 <span class="text-danger">卖出</span>
               {% endif %}
             </td>
-            <td class="text-end">{{ '%.2f'|format(t.price or 0) }}</td>
+            <td class="text-end">{{ '%.3f'|format(t.price or 0) }}</td>
             <td class="text-end">{{ '%.2f'|format(t.quantity or 0) }}</td>
             <td class="text-end">{{ '%.2f'|format(t.fee or 0) }}</td>
             <td class="text-end">{{ '%.2f'|format(t.amount or 0) }}</td>

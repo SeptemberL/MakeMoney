@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>设置中心</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: #0f172a; color: #e2e8f0; }
+        .panel { background: #111827; border: 1px solid #334155; border-radius: 10px; }
+        .panel .panel-title { font-weight: 700; margin-bottom: 8px; }
+        .text-muted-2 { color: #94a3b8; font-size: 12px; }
+        .form-control, .form-select { background: #0b1220; color: #e2e8f0; border-color: #334155; }
+        .form-control:focus, .form-select:focus { border-color: #38bdf8; box-shadow: 0 0 0 0.2rem rgba(56,189,248,.15); }
+        .badge-note { background: #1d4ed8; }
+    </style>
+</head>
+<body>
+<div class="container-fluid py-3">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h4 class="mb-0">系统设置中心</h4>
+        <span class="badge badge-note">保存后建议重启服务</span>
+    </div>
+    <div id="alertBox"></div>
+
+    <form id="settingsForm">
+        <div class="row g-3">
+            <div class="col-lg-6">
+                <div class="panel p-3">
+                    <div class="panel-title">基础设置</div>
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label">数据库类型</label>
+                            <select class="form-select" id="db_type">
+                                <option value="mysql">mysql</option>
+                                <option value="sqlite">sqlite</option>
+                            </select>
+                        </div>
+                        <div id="mysqlFields" class="row g-2 mt-1">
+                            <div class="col-md-6"><label class="form-label">DB_HOST</label><input id="db_host" class="form-control"></div>
+                            <div class="col-md-6"><label class="form-label">DB_PORT</label><input id="db_port" class="form-control"></div>
+                            <div class="col-md-6"><label class="form-label">DB_NAME</label><input id="db_name" class="form-control"></div>
+                            <div class="col-md-6"><label class="form-label">DB_USER</label><input id="db_user" class="form-control"></div>
+                            <div class="col-12"><label class="form-label">DB_PASSWORD</label><input id="db_password" class="form-control"></div>
+                            <div class="col-md-6"><label class="form-label">DB_CHARSET</label><input id="db_charset" class="form-control"></div>
+                        </div>
+                        <div id="sqliteFields" class="row g-2 mt-1">
+                            <div class="col-12"><label class="form-label">DB_PATH</label><input id="db_path" class="form-control"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-6">
+                <div class="panel p-3">
+                    <div class="panel-title">通信设置</div>
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label">通道</label>
+                            <select class="form-select" id="notify_channel">
+                                <option value="wechat">wechat</option>
+                                <option value="feishu">feishu</option>
+                            </select>
+                        </div>
+                        <div id="wxFields" class="row g-2 mt-1">
+                            <div class="col-md-6"><label class="form-label">message_group</label><input id="message_group" class="form-control"></div>
+                            <div class="col-md-6">
+                                <label class="form-label">filter_result_group_ids</label>
+                                <input id="filter_result_group_ids" class="form-control" placeholder="例如：1,2,3">
+                                <div class="text-muted-2 mt-1">股票筛选完成后，将结果推送到这些 group_id（逗号分隔）。留空则走 fallback。</div>
+                            </div>
+                            <div class="col-12 mt-2">
+                                <a href="/chat_groups" class="btn btn-info btn-sm" target="_blank" rel="noopener">
+                                    <i class="fas fa-comments"></i> 聊天群管理
+                                </a>
+                                <div class="text-muted-2 mt-1">仅在 WX 通道下显示，用于维护 message_group 对应聊天列表。</div>
+                            </div>
+                        </div>
+                        <div id="feishuFields" class="row g-2 mt-1">
+                            <div class="col-12 mt-2">
+                                <a href="/chat_groups" class="btn btn-info btn-sm" target="_blank" rel="noopener">
+                                    <i class="fas fa-comments"></i> 群组管理
+                                </a>
+                                <div class="text-muted-2 mt-1">飞书通道下：在群组管理中维护 list_type=feishu 的 group 配置（oapi/webhook、签名密钥、app_id/app_secret 等）。</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-6">
+                <div class="panel p-3">
+                    <div class="panel-title">Tushare 设置</div>
+                    <div class="text-muted-2 mb-2">用于 /api/fetch_today_tushare 等接口</div>
+                    <label class="form-label">TOKEN</label>
+                    <input id="tushare_token" class="form-control">
+                </div>
+            </div>
+
+            <div class="col-lg-6">
+                <div class="panel p-3">
+                    <div class="panel-title">Redis 加速（可开关）</div>
+                    <div class="text-muted-2 mb-2">用于热点读取缓存、以及可选的“信号状态写入缓冲（异步落库）”。关闭时不影响现有逻辑。</div>
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <div class="form-check mt-1">
+                                <input class="form-check-input" type="checkbox" id="redis_enabled" style="cursor:pointer;">
+                                <label class="form-check-label" for="redis_enabled" style="cursor:pointer;">启用 Redis</label>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">key_prefix</label>
+                            <input id="redis_key_prefix" class="form-control" placeholder="例如：stock">
+                        </div>
+                        <div class="col-md-6"><label class="form-label">host</label><input id="redis_host" class="form-control" placeholder="127.0.0.1"></div>
+                        <div class="col-md-3"><label class="form-label">port</label><input id="redis_port" class="form-control" placeholder="6379"></div>
+                        <div class="col-md-3"><label class="form-label">db</label><input id="redis_db" class="form-control" placeholder="0"></div>
+                        <div class="col-12"><label class="form-label">password（可选）</label><input id="redis_password" class="form-control" placeholder=""></div>
+                        <div class="col-md-6">
+                            <label class="form-label">socket_timeout_seconds</label>
+                            <input id="redis_socket_timeout_seconds" class="form-control" placeholder="0.5">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">latest_close_ttl_seconds</label>
+                            <input id="redis_latest_close_ttl_seconds" class="form-control" placeholder="10">
+                            <div class="text-muted-2 mt-1">信号扫描读取“最新收盘价映射”的缓存 TTL（秒）。</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">stock_name_ttl_seconds</label>
+                            <input id="redis_stock_name_ttl_seconds" class="form-control" placeholder="3600">
+                            <div class="text-muted-2 mt-1">stock_basic 名称缓存 TTL（秒）。</div>
+                        </div>
+                        <div class="col-12">
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" id="signal_state_buffer_enabled" style="cursor:pointer;">
+                                <label class="form-check-label" for="signal_state_buffer_enabled" style="cursor:pointer;">
+                                    启用信号 state 写入缓冲（写 Redis → 定时批量落库）
+                                </label>
+                            </div>
+                            <div class="text-muted-2 mt-1">适合 DB 网络 RTT 高、且允许信号 state “最终一致”的场景；关闭则每条 state 同步落库。</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">flush_interval_seconds</label>
+                            <input id="signal_state_flush_interval_seconds" class="form-control" placeholder="3">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">flush_batch_size</label>
+                            <input id="signal_state_flush_batch_size" class="form-control" placeholder="500">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-6">
+                <div class="panel p-3">
+                    <div class="panel-title">信号扫描（交易时间自动）</div>
+                    <div class="text-muted-2 mb-2">交易时间按配置周期自动扫描；非交易时间可手动执行一次用于测试。</div>
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label">扫描周期（秒）</label>
+                            <input id="signal_update_interval_seconds" class="form-control" type="number" min="5" step="1" value="15">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">扫描价格来源</label>
+                            <select class="form-select" id="signal_price_source">
+                                <option value="db_latest_close_qfq">db_latest_close_qfq（DB 最新收盘 * adj_factor）</option>
+                                <option value="realtime_qfq_opt_in">realtime_qfq_opt_in（腾讯实时价 * adj_factor）</option>
+                            </select>
+                            <div class="text-muted-2 mt-1">默认建议使用 DB；实时价仅用于显式开启的即时验证。</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">缺失复权因子策略</label>
+                            <select class="form-select" id="missing_adj_factor_policy">
+                                <option value="skip">skip（跳过该股票/该次触发）</option>
+                                <option value="raw_fallback">raw_fallback（回退未复权计算并标注）</option>
+                            </select>
+                        </div>
+                        <div class="col-12">
+                            <div class="form-check mt-1">
+                                <input class="form-check-input" type="checkbox" id="signal_send_text_enabled" style="cursor:pointer;" checked>
+                                <label class="form-check-label" for="signal_send_text_enabled" style="cursor:pointer;">
+                                    信号发送文字通知（可关闭）
+                                </label>
+                            </div>
+                            <div class="text-muted-2 mt-1">
+                                关闭后将不发送任何文本消息；若你开启了“飞书信号附带卡片图（PNG）”，则仍会继续发送图片卡片。
+                            </div>
+                            <div class="form-check mt-1">
+                                <input class="form-check-input" type="checkbox" id="feishu_send_card_image" style="cursor:pointer;">
+                                <label class="form-check-label" for="feishu_send_card_image" style="cursor:pointer;">
+                                    飞书信号附带卡片图（PNG）
+                                </label>
+                            </div>
+                            <div class="text-muted-2 mt-1">
+                                仅当通信通道为 <strong>feishu</strong> 时生效：触发后在文本外再发一张信号卡片图。需在「群组管理」对应飞书行填写 <code>app_id</code> / <code>app_secret</code> 以调用飞书上传图片接口。
+                            </div>
+                        </div>
+                        <div class="col-md-6 d-flex align-items-end">
+                            <button class="btn btn-outline-info w-100" type="button" id="btnRunSignalScan">非交易时间手动扫描一次</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-3">
+            <button class="btn btn-primary" type="submit">保存设置</button>
+            <button class="btn btn-warning ms-2" type="button" id="backfillStocksBtn">补齐缺失日线数据</button>
+            <span class="text-muted-2 ms-2">扫描当前已跟踪股票，自动回补从最新入库日到最新交易日的缺失数据</span>
+            <div class="mt-2">
+                <button class="btn btn-outline-light" type="button" id="syncAdjFactorBtn">单独同步复权因子</button>
+                <span class="text-muted-2 ms-2">对“已跟踪股票”增量同步 adj_factor（优先 AKShare，失败回退 Tushare）。</span>
+            </div>
+            <div class="mt-2">
+                <button class="btn btn-danger" type="button" id="rebuildRawStocksBtn">危险：清空并重拉不复权历史</button>
+                <span class="text-muted-2 ms-2">慎用：将清空当前所有已跟踪股票历史数据，并用 AKShare 不复权数据全量重建。</span>
+            </div>
+        </div>
+    </form>
+</div>
+
+<script>
+    const el = (id) => document.getElementById(id);
+    const show = (id, yes) => { el(id).style.display = yes ? "" : "none"; };
+    const alertBox = (type, msg) => {
+        const cls = type === "ok" ? "alert-success" : "alert-danger";
+        el("alertBox").innerHTML = `<div class="alert ${cls}" role="alert">${msg}</div>`;
+    };
+
+    function refreshDynamic() {
+        const dbType = (el("db_type").value || "").toLowerCase();
+        const channel = (el("notify_channel").value || "").toLowerCase();
+        show("mysqlFields", dbType === "mysql");
+        show("sqliteFields", dbType === "sqlite");
+        show("wxFields", channel === "wx" || channel === "wechat");
+        show("feishuFields", channel === "feishu");
+    }
+
+    async function loadSettings() {
+        const res = await fetch("/api/settings");
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || "读取失败");
+        const s = data.settings || {};
+        const db = s.DATABASE || {};
+        const rd = s.REDIS || {};
+        const nt = s.NOTIFY || {};
+        const ts = s.TUSHARE || {};
+        const sn = s.SIGNAL_NOTIFY || {};
+
+        el("db_type").value = (db.DB_TYPE || "mysql").toLowerCase();
+        el("db_host").value = db.DB_HOST || "";
+        el("db_port").value = db.DB_PORT || "";
+        el("db_name").value = db.DB_NAME || "";
+        el("db_user").value = db.DB_USER || "";
+        el("db_password").value = db.DB_PASSWORD || "";
+        el("db_charset").value = db.DB_CHARSET || "";
+        el("db_path").value = db.DB_PATH || "";
+
+        const ch = (nt.channel || "wechat").toLowerCase();
+        el("notify_channel").value = (ch === "wx") ? "wechat" : ch;
+        el("message_group").value = nt.message_group || nt.fallback_group_id || "";
+        el("filter_result_group_ids").value = nt.filter_result_group_ids || "";
+        el("tushare_token").value = ts.TOKEN || "";
+
+        {
+            const v = String(rd.enabled || "0").trim().toLowerCase();
+            el("redis_enabled").checked = ["1", "true", "yes", "on"].includes(v);
+        }
+        el("redis_host").value = rd.host || "";
+        el("redis_port").value = rd.port || "";
+        el("redis_db").value = rd.db || "";
+        el("redis_password").value = rd.password || "";
+        el("redis_key_prefix").value = rd.key_prefix || "stock";
+        el("redis_socket_timeout_seconds").value = rd.socket_timeout_seconds || "0.5";
+        el("redis_latest_close_ttl_seconds").value = rd.latest_close_ttl_seconds || "10";
+        el("redis_stock_name_ttl_seconds").value = rd.stock_name_ttl_seconds || "3600";
+        {
+            const v = String(rd.signal_state_buffer_enabled || "0").trim().toLowerCase();
+            el("signal_state_buffer_enabled").checked = ["1", "true", "yes", "on"].includes(v);
+        }
+        el("signal_state_flush_interval_seconds").value = rd.signal_state_flush_interval_seconds || "3";
+        el("signal_state_flush_batch_size").value = rd.signal_state_flush_batch_size || "500";
+
+        el("signal_update_interval_seconds").value = sn.update_interval_seconds || "15";
+        el("signal_price_source").value = sn.price_source || "db_latest_close_qfq";
+        el("missing_adj_factor_policy").value = sn.missing_adj_factor_policy || "skip";
+        {
+            const v = String(sn.send_text_enabled || "1").trim().toLowerCase();
+            el("signal_send_text_enabled").checked = ["1", "true", "yes", "on"].includes(v);
+        }
+        {
+            const v = String(sn.feishu_send_card_image || "").trim().toLowerCase();
+            el("feishu_send_card_image").checked = ["1", "true", "yes", "on"].includes(v);
+        }
+        refreshDynamic();
+    }
+
+    async function saveSettings(evt) {
+        evt.preventDefault();
+        const settings = {
+            DATABASE: {
+                DB_TYPE: el("db_type").value,
+                DB_HOST: el("db_host").value,
+                DB_PORT: el("db_port").value,
+                DB_NAME: el("db_name").value,
+                DB_USER: el("db_user").value,
+                DB_PASSWORD: el("db_password").value,
+                DB_CHARSET: el("db_charset").value,
+                DB_PATH: el("db_path").value
+            },
+            REDIS: {
+                enabled: el("redis_enabled").checked ? "1" : "0",
+                host: el("redis_host").value,
+                port: el("redis_port").value,
+                db: el("redis_db").value,
+                password: el("redis_password").value,
+                key_prefix: el("redis_key_prefix").value,
+                socket_timeout_seconds: el("redis_socket_timeout_seconds").value,
+                latest_close_ttl_seconds: el("redis_latest_close_ttl_seconds").value,
+                stock_name_ttl_seconds: el("redis_stock_name_ttl_seconds").value,
+                signal_state_buffer_enabled: el("signal_state_buffer_enabled").checked ? "1" : "0",
+                signal_state_flush_interval_seconds: el("signal_state_flush_interval_seconds").value,
+                signal_state_flush_batch_size: el("signal_state_flush_batch_size").value,
+            },
+            NOTIFY: {
+                channel: el("notify_channel").value,
+                message_group: el("message_group").value,
+                fallback_group_id: el("message_group").value,
+                filter_result_group_ids: el("filter_result_group_ids").value
+            },
+            TUSHARE: {
+                TOKEN: el("tushare_token").value
+            },
+            SIGNAL_NOTIFY: {
+                update_interval_seconds: el("signal_update_interval_seconds").value,
+                price_source: el("signal_price_source").value,
+                missing_adj_factor_policy: el("missing_adj_factor_policy").value,
+                send_text_enabled: el("signal_send_text_enabled").checked ? "1" : "0",
+                feishu_send_card_image: el("feishu_send_card_image").checked ? "1" : "0"
+            }
+        };
+        const res = await fetch("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ settings })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.message || "保存失败");
+        const note = data.require_restart ? "（部分配置建议重启后生效）" : "";
+        alertBox("ok", `保存成功 ${note}`);
+    }
+
+    async function runSignalScanOnce() {
+        const btn = el("btnRunSignalScan");
+        const oldText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "扫描中...";
+        try {
+            const res = await fetch("/api/signal_notify/run_all", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ force: true })
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.message || "扫描失败");
+            }
+            const st = data.stats || {};
+            alertBox("ok", `扫描完成：scanned=${st.scanned || 0}, triggered=${st.triggered || 0}`);
+        } catch (err) {
+            alertBox("err", err.message || "扫描失败");
+        } finally {
+            btn.disabled = false;
+            btn.textContent = oldText;
+        }
+    }
+
+    async function backfillMissingStocks() {
+        const btn = el("backfillStocksBtn");
+        const oldText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "补齐中...";
+        try {
+            const res = await fetch("/api/backfill_missing_stocks", { method: "POST" });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.message || "补齐失败");
+            }
+            let msg = data.message || "补齐完成";
+            if ((data.failed_count || 0) > 0) {
+                msg += `；失败股票 ${data.failed_count} 只`;
+            }
+            alertBox("ok", msg);
+        } catch (err) {
+            alertBox("err", err.message || "补齐失败");
+        } finally {
+            btn.disabled = false;
+            btn.textContent = oldText;
+        }
+    }
+
+    async function rebuildRawStocks() {
+        const pass = window.prompt('危险操作：将清空所有已跟踪股票历史数据。请输入“我确认”继续：');
+        if (pass !== '我确认') {
+            alertBox("err", "已取消：未通过二次确认");
+            return;
+        }
+
+        const btn = el("rebuildRawStocksBtn");
+        const oldText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "重建中...";
+        try {
+            const res = await fetch("/api/rebuild_stock_history_raw", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ confirm: "REBUILD_RAW" }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.message || "重建失败");
+            }
+            alertBox("ok", data.message || "重建完成");
+        } catch (err) {
+            alertBox("err", err.message || "重建失败");
+        } finally {
+            btn.disabled = false;
+            btn.textContent = oldText;
+        }
+    }
+
+    async function syncAdjFactorAllOnce() {
+        const btn = el("syncAdjFactorBtn");
+        const oldText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "同步中...";
+        try {
+            const res = await fetch("/api/sync_adj_factor_all", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({}),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.message || "同步失败");
+            }
+            const msg = data.message || `同步完成：total=${data.total || 0}, updated=${data.updated || 0}, failed=${data.failed || 0}`;
+            alertBox("ok", msg);
+        } catch (err) {
+            alertBox("err", err.message || "同步失败");
+        } finally {
+            btn.disabled = false;
+            btn.textContent = oldText;
+        }
+    }
+
+    el("db_type").addEventListener("change", refreshDynamic);
+    el("notify_channel").addEventListener("change", refreshDynamic);
+    el("backfillStocksBtn").addEventListener("click", () => {
+        backfillMissingStocks().catch((err) => alertBox("err", err.message || "补齐失败"));
+    });
+    el("syncAdjFactorBtn").addEventListener("click", () => {
+        syncAdjFactorAllOnce().catch((err) => alertBox("err", err.message || "同步失败"));
+    });
+    el("rebuildRawStocksBtn").addEventListener("click", () => {
+        rebuildRawStocks().catch((err) => alertBox("err", err.message || "重建失败"));
+    });
+    el("settingsForm").addEventListener("submit", (e) => {
+        saveSettings(e).catch((err) => alertBox("err", err.message || "保存失败"));
+    });
+    el("btnRunSignalScan").addEventListener("click", () => runSignalScanOnce());
+
+    loadSettings().catch((err) => alertBox("err", err.message || "加载失败"));
+</script>
+</body>
+</html>

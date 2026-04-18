@@ -8,9 +8,56 @@ tasks:
     trigger_args:
       hour: 14 
       minute: 45
-    enabled: true
+    enabled: false
     max_instances: 1
     misfire_grace_time: 300
     coalesce: true
     description: "每日检测白银 lof"
+
+  - task_id: "task_tushare_daily_17"
+    task_name: "每日17点 Tushare 未复权日线同步"
+    module_path: "tasks.daily_tushare_sync"
+    function_name: "run_daily_tushare_sync"
+    trigger_type: "cron"
+    trigger_args:
+      hour: 17
+      minute: 0
+      timezone: "Asia/Shanghai"
+    enabled: false
+    max_instances: 1
+    misfire_grace_time: 300
+    coalesce: true
+    description: "Tushare pro.daily 未复权日线写入已跟踪股票表；需 main 进程常驻。触发时间为 Asia/Shanghai 17:00（非 UTC）。"
+
+  - task_id: "task_daily_limitup_report_1705"
+    task_name: "每日17:05 涨停复盘输出"
+    module_path: "tasks.daily_limitup_report"
+    function_name: "run_daily_limitup_report"
+    trigger_type: "cron"
+    trigger_args:
+      hour: 17
+      minute: 5
+      timezone: "Asia/Shanghai"
+    enabled: false
+    run_once_per_day: true
+    max_instances: 1
+    misfire_grace_time: 300
+    coalesce: true
+    description: "收盘后涨停复盘：连板/首次涨停/最终封板/换手率等。优先 AkShare 分钟K + Tushare 日线/日指标。"
+
+  - task_id: "task_daily_limitup_report_png_1710"
+    task_name: "每日17:10 涨停复盘 PNG 输出"
+    module_path: "tasks.daily_limitup_report_png"
+    function_name: "run_daily_limitup_report_png"
+    trigger_type: "cron"
+    trigger_args:
+      hour: 17
+      minute: 10
+      timezone: "Asia/Shanghai"
+    run_once_per_day: true
+    enabled: false
+    max_instances: 1
+    misfire_grace_time: 300
+    coalesce: true
+    description: "将 outputs/daily_limitup_report/<date>/report.json 渲染为 PNG 表格图并分页输出。"
 

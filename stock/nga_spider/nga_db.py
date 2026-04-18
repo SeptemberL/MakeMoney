@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 import os
+from datetime import datetime, date
 
 # 将项目根目录加入路径，以便复用 database.py
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -114,15 +115,23 @@ def _init_tables_mysql(db):
             UNIQUE KEY uq_pid (pid)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='NGA帖子楼层';
     """)
+    # 兼容旧库：历史上可能缺少 quote_name 列或缺少索引。这里必须幂等，避免重复执行时报错。
     try:
-        db.execute("CREATE INDEX idx_tid_floor ON nga_floors (tid, floor_num)")
+        if not db.column_exists("nga_floors", "quote_name"):
+            db.execute(
+                "ALTER TABLE nga_floors "
+                "ADD COLUMN quote_name VARCHAR(64) DEFAULT NULL COMMENT '被引用楼层作者名' AFTER quote_pid"
+            )
     except Exception:
         pass
     try:
-        db.execute("""
-            ALTER TABLE nga_floors
-            ADD COLUMN quote_name VARCHAR(64) DEFAULT NULL COMMENT '被引用楼层作者名' AFTER quote_pid
-        """)
+        r = db.fetch_one(
+            "SELECT 1 FROM information_schema.statistics "
+            "WHERE table_schema = DATABASE() AND table_name = %s AND index_name = %s LIMIT 1",
+            ("nga_floors", "idx_tid_floor"),
+        )
+        if r is None:
+            db.execute("CREATE INDEX idx_tid_floor ON nga_floors (tid, floor_num)")
     except Exception:
         pass
     db.execute("""
@@ -378,17 +387,25 @@ def get_thread_configs(only_auto_run: bool = True):
 
 # ─────────────────────────── 已抓取楼层查询（含发送状态） ─────────────────────
 
-def get_floors_with_sent_for_group(tid: int, message_group_id, limit: int = 200, offset: int = 0) -> list:
+def get_floors_with_sent_for_group(
+    tid: int,
+    message_group_id,
+    limit: int = 200,
+    offset: int = 0,
+    author_id: int | None = None,
+) -> list:
     """
     查询某帖子的楼层列表，并标记在指定群组下是否已发送。
     返回按 floor_num 倒序排列的 list[dict]，每项包含：
       - tid, pid, floor_num, author_id, author_name, post_date,
         content_text, quote_text, images(list), score, created_at
       - sent: True/False （该群组下是否已发送）
+    author_id 非空时仅返回该作者的楼层。
     """
     db = Database.Create()
     try:
-        sql = """
+        author_clause = " AND f.author_id = %s" if author_id is not None else ""
+        sql = f"""
             SELECT
                 f.*,
                 CASE WHEN s.id IS NULL THEN 0 ELSE 1 END AS sent
@@ -396,11 +413,15 @@ def get_floors_with_sent_for_group(tid: int, message_group_id, limit: int = 200,
             LEFT JOIN nga_sent_log s
               ON f.pid = s.pid
              AND s.message_group_id = %s
-            WHERE f.tid = %s
+            WHERE f.tid = %s{author_clause}
             ORDER BY f.floor_num DESC
             LIMIT %s OFFSET %s
         """
-        rows = db.fetch_all(sql, (str(message_group_id), tid, limit, offset))
+        params: list = [str(message_group_id), tid]
+        if author_id is not None:
+            params.append(author_id)
+        params.extend([limit, offset])
+        rows = db.fetch_all(sql, tuple(params))
         out = []
         for r in rows:
             images = []
@@ -423,6 +444,56 @@ def get_floors_with_sent_for_group(tid: int, message_group_id, limit: int = 200,
                 'created_at': r.get('created_at'),
                 'sent': bool(r.get('sent')),
             })
+        return out
+    finally:
+        db.close()
+
+
+def count_floors_for_tid_author(tid: int, author_id: int) -> int:
+    """某帖中某作者在已抓取楼层中的条数（用于分页）。"""
+    db = Database.Create()
+    try:
+        row = db.fetch_one(
+            "SELECT COUNT(*) AS c FROM nga_floors WHERE tid = %s AND author_id = %s",
+            (tid, author_id),
+        )
+        if not row:
+            return 0
+        return int(row.get("c") or 0)
+    finally:
+        db.close()
+
+
+def resolve_author_names_for_tid(tid: int, author_ids: list[int]) -> dict[int, str]:
+    """
+    根据已抓取楼层，解析各 uid 在论坛中的昵称（取该作者在本帖中最高楼层号对应的一条）。
+    若尚未抓取到该作者的楼层，对应 key 不会出现或值为空字符串。
+    """
+    if not author_ids:
+        return {}
+    db = Database.Create()
+    try:
+        uniq = []
+        seen = set()
+        for aid in author_ids:
+            if aid in seen:
+                continue
+            seen.add(aid)
+            uniq.append(aid)
+        ph = ",".join(["%s"] * len(uniq))
+        sql = f"""
+            SELECT author_id, author_name, floor_num
+            FROM nga_floors
+            WHERE tid = %s AND author_id IN ({ph})
+            ORDER BY floor_num DESC
+        """
+        rows = db.fetch_all(sql, (tid, *uniq))
+        out: dict[int, str] = {}
+        for r in rows:
+            aid = int(r["author_id"])
+            if aid in out:
+                continue
+            out[aid] = (r.get("author_name") or "").strip()
         return out
     finally:
         db.close()
@@ -460,6 +531,42 @@ def get_floor_by_tid_pid(tid: int, pid: int) -> dict | None:
             'score': int(row.get('score') or 0),
             'created_at': row.get('created_at'),
         }
+    finally:
+        db.close()
+
+
+def get_floors_by_tid_author(tid: int, author_id: int, limit: int = 5000, offset: int = 0) -> list:
+    """
+    查询某帖中某作者的楼层列表（按楼层号升序）。
+    注意：post_date 在库中是字符串，日期过滤建议在上层用 Python 解析后做。
+    """
+    db = Database.Create()
+    try:
+        sql = """
+            SELECT
+                tid, pid, floor_num, author_id, author_name, post_date,
+                content_text, quote_text, score, created_at
+            FROM nga_floors
+            WHERE tid = %s AND author_id = %s
+            ORDER BY floor_num ASC
+            LIMIT %s OFFSET %s
+        """
+        rows = db.fetch_all(sql, (tid, author_id, limit, offset))
+        out = []
+        for r in rows:
+            out.append({
+                'tid': int(r['tid']),
+                'pid': int(r['pid']),
+                'floor_num': int(r['floor_num']),
+                'author_id': int(r['author_id']),
+                'author_name': r.get('author_name') or '',
+                'post_date': r.get('post_date') or '',
+                'content_text': r.get('content_text') or '',
+                'quote_text': r.get('quote_text') or '',
+                'score': int(r.get('score') or 0),
+                'created_at': r.get('created_at'),
+            })
+        return out
     finally:
         db.close()
 

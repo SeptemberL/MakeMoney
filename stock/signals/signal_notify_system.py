@@ -79,7 +79,15 @@ class SingleBase(ABC):
     def __init__(self, config: SignalConfig):
         self.config = config
         self.last_sent_at: Optional[datetime] = None
+        # 与每条文本通知一一对应的模板 payload，供飞书卡片图等扩展使用
+        self._last_trigger_payloads: List[Dict[str, Any]] = []
         self.init()
+
+    def take_trigger_payloads(self) -> List[Dict[str, Any]]:
+        """取出本次 update 产生的 payload 列表（调用后清空缓存）。"""
+        out = list(self._last_trigger_payloads)
+        self._last_trigger_payloads.clear()
+        return out
 
     @abstractmethod
     def init(self) -> None:
@@ -127,6 +135,7 @@ class PriceRangeSignal(SingleBase):
     def update(self, price: float, now: Optional[datetime] = None) -> List[str]:
         now = now or datetime.now()
         messages: List[str] = []
+        self._last_trigger_payloads.clear()
         events = self.trigger(price)
         today = now.strftime("%Y-%m-%d")
         if events and self.last_notified_date == today:
@@ -143,6 +152,7 @@ class PriceRangeSignal(SingleBase):
                 "upper": self.upper,
                 "time": now.strftime("%Y-%m-%d %H:%M:%S"),
             }
+            self._last_trigger_payloads.append(payload)
             messages.append(self.config.message_template.render(payload))
         if messages:
             self.last_notified_date = today
@@ -199,6 +209,7 @@ class FibonacciRetraceSignal(SingleBase):
     def update(self, price: float, now: Optional[datetime] = None) -> List[str]:
         now = now or datetime.now()
         messages: List[str] = []
+        self._last_trigger_payloads.clear()
         events = self.trigger(price)
         today = now.strftime("%Y-%m-%d")
         if events and self.last_notified_date == today:
@@ -221,6 +232,7 @@ class FibonacciRetraceSignal(SingleBase):
                 "level_500": self.level_500,
                 "level_618": self.level_618,
             }
+            self._last_trigger_payloads.append(payload)
             tmpl_text = self._zone_templates.get(zone) or self.config.message_template.template
             messages.append(SignalMessageTemplate(template=tmpl_text).render(payload))
         if messages:
@@ -300,6 +312,7 @@ class PriceLevelIntervalSignal(SingleBase):
     def update(self, price: float, now: Optional[datetime] = None) -> List[str]:
         now = now or datetime.now()
         messages: List[str] = []
+        self._last_trigger_payloads.clear()
         self.last_price = price
         if not self._condition(price):
             return messages
@@ -324,6 +337,7 @@ class PriceLevelIntervalSignal(SingleBase):
             "mode_label": mode_label,
             "time": now.strftime("%Y-%m-%d %H:%M:%S"),
         }
+        self._last_trigger_payloads.append(payload)
         messages.append(self.config.message_template.render(payload))
         self.last_sent_at = now
         return messages
@@ -447,6 +461,8 @@ class SingleManager:
             for message in messages:
                 signal.send_message(message, sender)
                 out.append(message)
+            # 避免内存中残留 payload（本路径不发飞书卡片图）
+            signal.take_trigger_payloads()
         return out
 
     def list_signals(self) -> List[Dict[str, Any]]:

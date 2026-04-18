@@ -46,6 +46,25 @@
             显示该帖子最近抓取的楼层，标记是否已发送到配置的消息群组。点击「发送」可手动推送单条楼层。
         </p>
 
+        {% if thread and not error %}
+        <div class="d-flex flex-wrap align-items-end gap-2 mb-3">
+            <div>
+                <label for="authorFilter" class="form-label small mb-1">关注作者 ID</label>
+                <select id="authorFilter" class="form-select form-select-sm" style="min-width: 18rem;">
+                    <option value="">无</option>
+                    {% for wa in watch_authors or [] %}
+                    <option value="{{ wa.author_id }}">{% if wa.forum_name %}{{ wa.forum_name }}（uid: {{ wa.author_id }}）{% else %}uid: {{ wa.author_id }}（暂无昵称）{% endif %}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% if not (watch_authors or []) %}
+            <span class="text-muted small">未配置关注作者时仅可查看全部楼层。</span>
+            {% else %}
+            <span class="text-muted small align-self-center">选择关注作者后每页 10 条，用「上一页 / 下一页」翻页加载。</span>
+            {% endif %}
+        </div>
+        {% endif %}
+
         <div class="card">
             <div class="card-body">
                 <div id="loading" class="text-center py-4 text-muted">
@@ -54,6 +73,7 @@
                 <div id="errorTip" class="alert alert-danger" style="display:none;"></div>
                 <div id="infoTip" class="alert alert-info" style="display:none;"></div>
                 <div id="floorList" style="display:none;"></div>
+                <div id="floorPager" class="d-flex flex-wrap align-items-center justify-content-between gap-2 mt-2" style="display:none;"></div>
                 <div id="emptyTip" class="text-center text-muted py-4" style="display:none;">
                     暂无抓取到的楼层。
                 </div>
@@ -64,21 +84,37 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         const TID = {{ tid }};
+        var authorListPage = 1;
 
-        function loadFloors() {
+        function loadFloors(requestedPage) {
             const loading  = document.getElementById('loading');
             const errorTip = document.getElementById('errorTip');
             const infoTip  = document.getElementById('infoTip');
             const list     = document.getElementById('floorList');
             const emptyTip = document.getElementById('emptyTip');
+            const pager    = document.getElementById('floorPager');
+
+            if (typeof requestedPage === 'number' && !isNaN(requestedPage)) {
+                authorListPage = requestedPage;
+            }
 
             loading.style.display  = 'block';
             errorTip.style.display = 'none';
             infoTip.style.display  = 'none';
             list.style.display     = 'none';
             emptyTip.style.display = 'none';
+            if (pager) {
+                pager.style.display = 'none';
+                pager.innerHTML = '';
+            }
 
-            fetch('/api/nga_floors/' + TID)
+            var url = '/api/nga_floors/' + TID;
+            var sel = document.getElementById('authorFilter');
+            if (sel && sel.value) {
+                url += '?author_id=' + encodeURIComponent(sel.value) + '&page=' + encodeURIComponent(String(authorListPage));
+            }
+
+            fetch(url)
                 .then(function(res) { return res.json(); })
                 .then(function(data) {
                     loading.style.display = 'none';
@@ -91,6 +127,14 @@
                         infoTip.textContent = data.message;
                         infoTip.style.display = 'block';
                     }
+                    if (data.pagination) {
+                        authorListPage = data.pagination.page;
+                        renderAuthorPager(data.pagination);
+                    } else {
+                        authorListPage = 1;
+                        renderAuthorPager(null);
+                    }
+
                     var floors = data.floors || [];
                     if (floors.length === 0) {
                         emptyTip.style.display = 'block';
@@ -118,7 +162,7 @@
                 '<th style="width:10rem;">时间</th>' +
                 '<th>内容预览</th>' +
                 '<th style="width:6rem;">状态</th>' +
-                '<th style="width:6rem;">操作</th>' +
+                '<th style="width:12rem;">操作</th>' +
                 '</tr>' +
                 '</thead>' +
                 '<tbody>' +
@@ -136,6 +180,7 @@
                         '<td><span class="badge status-badge ' + statusClass + '">' + statusText + '</span></td>' +
                         '<td>' +
                         '<button type="button" class="btn btn-sm btn-outline-primary" onclick="sendFloor(' + f.pid + ')">发送</button>' +
+                        ' <button type="button" class="btn btn-sm btn-outline-success" onclick="openExportModal(' + f.author_id + ', \'' + escapeJs(f.author_name || '') + '\')">导出</button>' +
                         '</td>' +
                         '</tr>';
                 }).join('') +
@@ -144,10 +189,51 @@
             document.getElementById('floorList').innerHTML = html;
         }
 
+        function renderAuthorPager(pg) {
+            window.__ngaAuthorPager = pg || null;
+            var el = document.getElementById('floorPager');
+            if (!el) return;
+            if (!pg || !pg.total || pg.total < 1) {
+                el.style.display = 'none';
+                el.innerHTML = '';
+                return;
+            }
+            var p = pg.page;
+            var tp = pg.total_pages;
+            var canPrev = p > 1;
+            var canNext = p < tp;
+            el.innerHTML = '' +
+                '<span class="text-muted small">第 ' + p + ' / ' + tp + ' 页，共 ' + pg.total + ' 条</span>' +
+                '<div class="btn-group btn-group-sm">' +
+                '<button type="button" class="btn btn-outline-secondary"' + (canPrev ? '' : ' disabled') + ' onclick="authorPagerPrev()">上一页</button>' +
+                '<button type="button" class="btn btn-outline-secondary"' + (canNext ? '' : ' disabled') + ' onclick="authorPagerNext()">下一页</button>' +
+                '</div>';
+            el.style.display = 'flex';
+        }
+
+        function authorPagerPrev() {
+            if (authorListPage <= 1) return;
+            loadFloors(authorListPage - 1);
+        }
+
+        function authorPagerNext() {
+            var pg = window.__ngaAuthorPager;
+            if (pg && authorListPage >= pg.total_pages) return;
+            loadFloors(authorListPage + 1);
+        }
+
         function escapeHtml(str) {
             var div = document.createElement('div');
             div.textContent = str;
             return div.innerHTML;
+        }
+
+        function escapeJs(str) {
+            return String(str)
+                .replace(/\\/g, '\\\\')
+                .replace(/'/g, "\\'")
+                .replace(/\\r/g, '\\r')
+                .replace(/\\n/g, '\\n');
         }
 
         function sendFloor(pid) {
@@ -168,7 +254,102 @@
                 });
         }
 
-        document.addEventListener('DOMContentLoaded', loadFloors);
+        let exportModal = null;
+
+        function openExportModal(authorId, authorName) {
+            document.getElementById('exportAuthorId').value = String(authorId || '');
+            document.getElementById('exportAuthorName').textContent = authorName ? ('作者：' + authorName) : '';
+            document.getElementById('exportStartDate').value = '';
+            document.getElementById('exportEndDate').value = '';
+            document.getElementById('exportFormat').value = 'md';
+            exportModal.show();
+        }
+
+        function doExport() {
+            const authorId = (document.getElementById('exportAuthorId').value || '').trim();
+            const startDate = (document.getElementById('exportStartDate').value || '').trim();
+            const endDate = (document.getElementById('exportEndDate').value || '').trim();
+            const format = (document.getElementById('exportFormat').value || 'md').trim();
+
+            if (!authorId) {
+                alert('请填写说话人 ID');
+                return;
+            }
+            if (!startDate || !endDate) {
+                alert('请选择开始/结束日期');
+                return;
+            }
+
+            const url = '/api/nga_export_author'
+                + '?tid=' + encodeURIComponent(String(TID))
+                + '&author_id=' + encodeURIComponent(authorId)
+                + '&start_date=' + encodeURIComponent(startDate)
+                + '&end_date=' + encodeURIComponent(endDate)
+                + '&format=' + encodeURIComponent(format);
+
+            window.location.href = url;
+            exportModal.hide();
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            var sel = document.getElementById('authorFilter');
+            if (sel) {
+                sel.addEventListener('change', function() {
+                    authorListPage = 1;
+                    loadFloors();
+                });
+            }
+            loadFloors();
+        });
+    </script>
+
+    <!-- 导出弹窗 -->
+    <div class="modal fade" id="exportModal" tabindex="-1" aria-labelledby="exportModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="exportModalLabel">导出该作者发言</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="text-muted small mb-2" id="exportAuthorName"></div>
+                    <div class="mb-3">
+                        <label class="form-label">说话人 ID (uid)</label>
+                        <input type="number" class="form-control" id="exportAuthorId" min="1" placeholder="例如 150058" />
+                    </div>
+                    <div class="row g-2">
+                        <div class="col-6">
+                            <label class="form-label">开始日期</label>
+                            <input type="date" class="form-control" id="exportStartDate" />
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label">结束日期</label>
+                            <input type="date" class="form-control" id="exportEndDate" />
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <label class="form-label">导出格式</label>
+                        <select class="form-select" id="exportFormat">
+                            <option value="md">Markdown (.md)</option>
+                            <option value="txt">文本 (.txt)</option>
+                        </select>
+                    </div>
+                    <div class="form-text mt-2">
+                        将从已抓取的楼层中筛选该作者在所选日期范围内的发言并导出（不触发额外抓取）。
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-success" onclick="doExport()">导出下载</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            exportModal = new bootstrap.Modal(document.getElementById('exportModal'));
+        });
     </script>
 </body>
 </html>

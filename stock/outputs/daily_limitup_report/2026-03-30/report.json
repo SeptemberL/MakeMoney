@@ -1,0 +1,34 @@
+{
+  "success": true,
+  "trade_date": "2026-03-30",
+  "generated_at": "2026-03-30T17:26:40",
+  "count": 2,
+  "rows": [
+    {
+      "trade_date": "2026-03-30",
+      "code": "000008",
+      "name": "神州高铁",
+      "consecutive_limitup_days": 1,
+      "first_limitup_time": null,
+      "final_seal_time": null,
+      "turnover_at_first_limitup": null,
+      "turnover_eod": 4.95,
+      "status": "partial",
+      "reason": "missing_minute_data",
+      "generated_at": "2026-03-30T17:26:40"
+    },
+    {
+      "trade_date": "2026-03-30",
+      "code": "000048",
+      "name": "京基智农",
+      "consecutive_limitup_days": 1,
+      "first_limitup_time": null,
+      "final_seal_time": null,
+      "turnover_at_first_limitup": null,
+      "turnover_eod": 7.43,
+      "status": "partial",
+      "reason": "missing_minute_data",
+      "generated_at": "2026-03-30T17:26:40"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+## 说明
+#
+# 该文件用于“配置示例”与“复制粘贴参考”，并不会被程序自动加载。
+# 当前项目的 group 配置存储在数据库表 `message_group` / `message_group_chat` 中，
+# 推荐通过设置中心 `settings_console` + 群组管理页 `/chat_groups` 来维护。
+#
+# 业务侧（如 signal_rule）仍只填写 group_id / group_ids；
+# 实际走微信还是飞书由 settings_console 的全局通道 NOTIFY.channel 决定。
+#
+# - NOTIFY.channel=wechat：从 list_type=weixin 的群组读取 chat_list 并发送微信
+# - NOTIFY.channel=feishu：从 list_type=feishu 的群组读取 send_mode/chat_id/webhook_url 并发送飞书
+
+notify_channel_examples:
+  wechat:
+    NOTIFY:
+      channel: "wechat"
+      message_group: 1
+    message_groups_in_db:
+      - list_type: "weixin"
+        group_id: 1
+        chat_list:
+          - "股票提醒群A"
+          - "股票提醒群B"
+
+  feishu:
+    NOTIFY:
+      channel: "feishu"
+    FEISHU:
+      # HTTPS 模式可选签名（用于 send_mode=https 的群 webhook）
+      sign: "<optional_sign_secret>"
+      timeout_seconds: 10
+    message_groups_in_db:
+      - list_type: "feishu"
+        group_id: 1
+        name: "飞书群A"
+        send_mode: "oapi"
+        chat_id: "<chat_id>"
+        app_id: "<your_app_id>"
+        app_secret: "<your_app_secret>"
+      - list_type: "feishu"
+        group_id: 2
+        name: "飞书群B"
+        send_mode: "https"
+        webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxx"
+        sign_secret: "<optional_sign_secret_for_this_group>"

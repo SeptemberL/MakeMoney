@@ -1,7 +1,7 @@
 import akshare as ak
 import pandas as pd
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 import check_signal
 from database.database import Database
@@ -525,41 +525,145 @@ class StockListManager:
         try:
             db = Database.Create()
             table_name = self._get_stock_table_name(stock_id)
-            
-            query = f"SELECT * FROM {table_name}"
-            conditions = []
-            params = []
-            
-            start_date = (datetime.now() - timedelta(days=days)).strftime('%Y%m%d')
-            end_date = datetime.now().strftime('%Y%m%d')
 
-            if start_date:
-                conditions.append("trade_date >= %s")
-                params.append(start_date)
-            if end_date:
-                conditions.append("trade_date <= %s")
-                params.append(end_date)
-                
-            if conditions:
-                query += " WHERE " + " AND ".join(conditions)
-                
-            query += " ORDER BY trade_date"
-            
-            # 使用Database类方法获取数据
-            results = db.fetch_all(query, params)
+            # trade_date 在各 stock_ 表中为 DATE（通常表现为 YYYY-MM-DD），统一使用 ISO 字符串做筛选
+            start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+            end_date = datetime.now().strftime('%Y-%m-%d')
+
+            query = (
+                f"SELECT * FROM {table_name} "
+                "WHERE trade_date >= %s AND trade_date <= %s "
+                "ORDER BY trade_date"
+            )
+            results = db.fetch_all(query, (start_date, end_date))
             if results:
                 df = pd.DataFrame(results)
-                # 确保日期格式统一
                 if 'trade_date' in df.columns:
                     df['trade_date'] = pd.to_datetime(df['trade_date'])
                 return df
             return None
-            
+
         except Exception as e:
             logger.error(f"获取股票 {stock_id} 数据时出错: {str(e)}", exc_info=True)
             return None
         finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    def get_stock_data_qfq(
+        self,
+        stock_id: str,
+        days: int = 365,
+        *,
+        missing_adj_factor_policy: str = "skip",
+    ) -> Optional[pd.DataFrame]:
+        """
+        读取本地“未复权”日线，并从 adj_factor 表取复权因子，将 OHLC 转为前复权口径后返回。
+
+        缺失复权因子时：
+        - skip: 丢弃缺失日期的行；若全部缺失则返回 None
+        - raw_fallback: 保留缺失日期的行（该日 OHLC 保持未复权）
+        """
+        df = self.get_stock_data(stock_id, days)
+        if df is None or df.empty:
+            return None
+
+        base_code = str(stock_id or "").strip()
+        if "." in base_code:
+            base_code = base_code.split(".", 1)[0].strip()
+        if not base_code:
+            return None
+
+        if "trade_date" not in df.columns:
+            return None
+
+        min_td = pd.to_datetime(df["trade_date"].min()).strftime("%Y-%m-%d")
+        max_td = pd.to_datetime(df["trade_date"].max()).strftime("%Y-%m-%d")
+
+        policy = str(missing_adj_factor_policy or "skip").strip().lower()
+        if policy not in ("skip", "raw_fallback"):
+            policy = "skip"
+
+        db = Database.Create()
+        try:
+            rows = db.get_adj_factors(stock_codes=[base_code], start_trade_date=min_td, end_trade_date=max_td) or []
+        finally:
             db.close()
+
+        if not rows:
+            return df if policy == "raw_fallback" else None
+
+        f = pd.DataFrame(rows)
+        if f.empty or "trade_date" not in f.columns:
+            return df if policy == "raw_fallback" else None
+        f["trade_date"] = pd.to_datetime(f["trade_date"])
+        f["adj_factor"] = pd.to_numeric(f.get("adj_factor"), errors="coerce")
+
+        out = df.copy()
+        out["trade_date"] = pd.to_datetime(out["trade_date"])
+        out = out.merge(f[["trade_date", "adj_factor"]], on="trade_date", how="left")
+
+        if policy == "skip":
+            out = out.dropna(subset=["adj_factor"])
+            if out.empty:
+                return None
+
+        for col in ("open", "high", "low", "close"):
+            if col in out.columns:
+                raw = pd.to_numeric(out[col], errors="coerce")
+                af = out["adj_factor"].astype(float)
+                out[col] = raw.where(out["adj_factor"].isna(), raw * af)
+
+        return out
+
+    def get_stock_data_range(self, stock_id: str, start_date, end_date):
+        """
+        按日期区间读取本地日线（表 trade_date 存为 YYYY-MM-DD，WHERE 使用 ISO 日期字符串）。
+        :param start_date/end_date: datetime 或 'YYYY-MM-DD' / 'YYYYMMDD'
+        :return: DataFrame 或 None（无表/无数据）
+        """
+        def _norm(x):
+            if x is None:
+                return None
+            if hasattr(x, "strftime"):
+                return x.strftime("%Y-%m-%d")
+            xs = str(x).strip().replace("-", "")
+            if len(xs) == 8 and xs.isdigit():
+                return f"{xs[:4]}-{xs[4:6]}-{xs[6:8]}"
+            s = str(x).strip()
+            return s[:10] if len(s) >= 10 else s
+
+        s = _norm(start_date)
+        e = _norm(end_date)
+        if not s or not e:
+            return None
+
+        db = None
+        try:
+            db = Database.Create()
+            table_name = self._get_stock_table_name(stock_id)
+            if not db.table_exists(table_name):
+                return None
+
+            query = (
+                f"SELECT * FROM {table_name} "
+                "WHERE trade_date >= %s AND trade_date <= %s ORDER BY trade_date"
+            )
+            results = db.fetch_all(query, (s, e))
+            if results:
+                df = pd.DataFrame(results)
+                if "trade_date" in df.columns:
+                    df["trade_date"] = pd.to_datetime(df["trade_date"])
+                return df
+            return None
+        except Exception as ex:
+            logger.error("按区间获取股票 %s 数据失败: %s", stock_id, ex, exc_info=True)
+            return None
+        finally:
+            if db:
+                db.close()
 
 
 if __name__ == "__main__":

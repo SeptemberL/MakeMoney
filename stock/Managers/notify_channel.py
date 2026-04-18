@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import platform
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +40,26 @@ def _ensure_wx_for_notify():
     return None
 
 
-def send_notify_to_group(group_id: int, message: str) -> None:
+def send_notify_to_group(
+    group_id: int,
+    message: str,
+    *,
+    feishu_signal_payload: Optional[Dict[str, Any]] = None,
+) -> None:
     """
-    按群组 ID 发送文本：飞书走全局 Webhook；微信走库中 message_group 映射。
-    与 feishu_signal_send_batch 配合时，飞书同批次同正文只发一次。
+    按群组 ID 发送文本：
+    - 全局渠道为飞书：从 DB 的飞书 group（list_type=feishu）解析并按 send_mode 发送（OAPI/HTTPS）
+    - 全局渠道为微信：从 DB 的微信 group（list_type=weixin）解析并发送到 chat_list
+
+    feishu_signal_payload：可选，为 SignalMessageTemplate 所用的 payload 字典；
+    当 NOTIFY.channel=feishu 且 [SIGNAL_NOTIFY] feishu_send_card_image 开启时，在文本之后尝试再发一张卡片图。
     """
-    from config import Config
-    from Managers.feishu_bot import (
-        feishu_batch_already_sent,
-        feishu_batch_mark_sent,
-        send_feishu_text,
+    from Managers.feishu_group_manager import FeishuGroupManager
+    from Managers.feishu_senders import send_feishu_group_text, try_send_feishu_signal_card_png
+    from Managers.runtime_settings import (
+        get_feishu_signal_send_card_image,
+        get_notify_channel,
+        get_signal_send_text_enabled,
     )
     from Managers.wx_group_manager import WXGroupManager
     from stocks.stock_global import stockGlobal
@@ -58,23 +68,28 @@ def send_notify_to_group(group_id: int, message: str) -> None:
     if not text:
         return
 
-    cfg = Config()
-    channel = cfg.get_notify_channel()
+    channel = get_notify_channel()
+    send_text = bool(get_signal_send_text_enabled())
 
     if channel == "feishu":
-        if feishu_batch_already_sent(text):
-            logger.debug("飞书通道：同批次已成功发送该正文，跳过 group_id=%s", group_id)
-            return
-        webhook = cfg.get_feishu_webhook_url()
-        if not webhook:
-            logger.error("NOTIFY.channel=feishu 但未配置 FEISHU.webhook_url，消息未发送")
-            return
-        timeout = cfg.get_feishu_timeout_seconds()
-        sign_secret = cfg.get_feishu_sign_secret()
-        if send_feishu_text(
-            webhook, text, timeout=timeout, sign_secret=sign_secret
-        ):
-            feishu_batch_mark_sent(text)
+        try:
+            grp = FeishuGroupManager().require(int(group_id))
+            if send_text:
+                send_feishu_group_text(grp, text)
+            if feishu_signal_payload and get_feishu_signal_send_card_image():
+                r = try_send_feishu_signal_card_png(grp, feishu_signal_payload)
+                if not r.ok:
+                    logger.warning(
+                        "飞书信号卡片图未发送 group_id=%s: %s",
+                        group_id,
+                        r.error or "unknown",
+                    )
+        except Exception as e:
+            logger.error("飞书发送失败 group_id=%s: %s", group_id, e)
+        return
+
+    # 非飞书通道（微信/WX）仅支持文本；若关闭文字通知则直接返回
+    if not send_text:
         return
 
     wx = _ensure_wx_for_notify()
@@ -98,11 +113,14 @@ def send_notify_to_group(group_id: int, message: str) -> None:
 def send_notify_fallback(message: Union[str, List[str], None]) -> None:
     """
     无明确 group_id 时的批量/汇总通知：
-    - 飞书：整段文本 POST 一次到全局 Webhook
+    - 飞书：发送到 [NOTIFY] message_group（同一个 group_id），并按该飞书 group 的 send_mode 路由
     - 微信：优先 [NOTIFY] fallback_group_id 对应群列表；未配置则用 [WX] TestImageSendTo 作为会话名
     """
-    from config import Config
-    from Managers.feishu_bot import send_feishu_text
+    from Managers.runtime_settings import (
+        get_notify_channel,
+        get_notify_message_group,
+        get_setting,
+    )
     from Managers.wx_group_manager import WXGroupManager
     from stocks.stock_global import stockGlobal
 
@@ -110,18 +128,12 @@ def send_notify_fallback(message: Union[str, List[str], None]) -> None:
     if not text:
         return
 
-    cfg = Config()
-    if cfg.get_notify_channel() == "feishu":
-        webhook = cfg.get_feishu_webhook_url()
-        if not webhook:
-            logger.error("NOTIFY.channel=feishu 但未配置 FEISHU.webhook_url，fallback 消息未发送")
+    if get_notify_channel() == "feishu":
+        fg = get_notify_message_group()
+        if fg is None:
+            logger.error("NOTIFY.channel=feishu 但未配置 NOTIFY.message_group，fallback 消息未发送")
             return
-        send_feishu_text(
-            webhook,
-            text,
-            timeout=cfg.get_feishu_timeout_seconds(),
-            sign_secret=cfg.get_feishu_sign_secret(),
-        )
+        send_notify_to_group(int(fg), text)
         return
 
     wx = _ensure_wx_for_notify()
@@ -131,7 +143,7 @@ def send_notify_fallback(message: Union[str, List[str], None]) -> None:
         logger.info("通知(模拟) fallback: %s", text[:500])
         return
 
-    fg = cfg.get_notify_fallback_group_id()
+    fg = get_notify_message_group()
     if fg is not None:
         chat_list = WXGroupManager().find_wx_group(fg) or []
         if chat_list:
@@ -143,7 +155,7 @@ def send_notify_fallback(message: Union[str, List[str], None]) -> None:
             return
         logger.warning("fallback_group_id=%s 未配置 chat_list，改用 TestImageSendTo", fg)
 
-    who = (cfg.get("WX", "TestImageSendTo") or "光影相生").strip()
+    who = str(get_setting("WX", "TestImageSendTo", "光影相生") or "光影相生").strip()
     try:
         wx.SendMsg(text, who)
     except Exception as e:

@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>聊天群管理</title>
+    <title>群组管理</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet">
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -15,7 +15,7 @@
 <body>
     <div class="container mt-4">
         <div class="d-flex justify-content-between align-items-center mb-4">
-            <h4 class="mb-0"><i class="fas fa-comments"></i> 聊天群管理</h4>
+            <h4 class="mb-0"><i class="fas fa-comments"></i> 群组管理</h4>
             <a href="/" class="btn btn-outline-secondary"><i class="fas fa-arrow-left"></i> 返回主页</a>
         </div>
 
@@ -31,11 +31,48 @@
                         <label class="form-label mb-0">类型</label>
                         <select class="form-select form-select-sm" id="newListType" style="width: 100px;">
                             <option value="weixin" selected>微信 (weixin)</option>
+                            <option value="feishu">飞书 (feishu)</option>
                         </select>
                     </div>
-                    <div class="col-auto flex-grow-1">
+                    <div class="col-auto flex-grow-1" id="newWeixinFields">
                         <label class="form-label mb-0">聊天名称（多个用逗号或换行）</label>
                         <input type="text" class="form-control form-control-sm" id="newChatList" placeholder="如：群名1, 群名2">
+                    </div>
+                    <div class="col-12" id="newFeishuFields" style="display:none;">
+                        <div class="row g-2">
+                            <div class="col-md-3">
+                                <label class="form-label mb-0">名称</label>
+                                <input type="text" class="form-control form-control-sm" id="newFeishuName" placeholder="如：飞书群A">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label mb-0">发送方式</label>
+                                <select class="form-select form-select-sm" id="newFeishuSendMode">
+                                    <option value="oapi">oapi</option>
+                                    <option value="https">https</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3" id="newFeishuChatIdWrap">
+                                <label class="form-label mb-0">chat_id</label>
+                                <input type="text" class="form-control form-control-sm" id="newFeishuChatId" placeholder="OAPI chat_id">
+                            </div>
+                            <div class="col-md-3" id="newFeishuAppIdWrap">
+                                <label class="form-label mb-0">app_id</label>
+                                <input type="text" class="form-control form-control-sm" id="newFeishuAppId" placeholder="OAPI app_id">
+                            </div>
+                            <div class="col-md-3" id="newFeishuAppSecretWrap">
+                                <label class="form-label mb-0">app_secret</label>
+                                <input type="password" class="form-control form-control-sm" id="newFeishuAppSecret" placeholder="OAPI app_secret">
+                            </div>
+                            <div class="col-md-3" id="newFeishuWebhookWrap" style="display:none;">
+                                <label class="form-label mb-0">webhook_url</label>
+                                <input type="text" class="form-control form-control-sm" id="newFeishuWebhookUrl" placeholder="HTTPS webhook">
+                            </div>
+                            <div class="col-md-3" id="newFeishuSignWrap" style="display:none;">
+                                <label class="form-label mb-0">sign_secret</label>
+                                <input type="password" class="form-control form-control-sm" id="newFeishuSignSecret" placeholder="可选：该群 webhook 签名密钥">
+                            </div>
+                        </div>
+                        <div class="text-muted small mt-1">提示：飞书 group 用于全局通知渠道为 feishu 时按 group_id 路由发送。</div>
                     </div>
                     <div class="col-auto">
                         <button type="submit" class="btn btn-primary btn-sm">添加</button>
@@ -64,11 +101,45 @@
                         <label class="form-label">类型</label>
                         <select class="form-select" id="editListType">
                             <option value="weixin">微信 (weixin)</option>
+                            <option value="feishu">飞书 (feishu)</option>
                         </select>
                     </div>
-                    <div class="mb-2">
+                    <div class="mb-2" id="editWeixinFields">
                         <label class="form-label">聊天名称（每行一个）</label>
                         <textarea class="form-control" id="editChatList" rows="4" placeholder="每行一个群名"></textarea>
+                    </div>
+                    <div id="editFeishuFields" style="display:none;">
+                        <div class="mb-2">
+                            <label class="form-label">名称</label>
+                            <input type="text" class="form-control" id="editName" placeholder="如：飞书群A">
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">发送方式</label>
+                            <select class="form-select" id="editSendMode">
+                                <option value="oapi">oapi</option>
+                                <option value="https">https</option>
+                            </select>
+                        </div>
+                        <div class="mb-2" id="editChatIdWrap">
+                            <label class="form-label">chat_id</label>
+                            <input type="text" class="form-control" id="editChatId" placeholder="OAPI chat_id">
+                        </div>
+                        <div class="mb-2" id="editAppIdWrap">
+                            <label class="form-label">app_id</label>
+                            <input type="text" class="form-control" id="editAppId" placeholder="OAPI app_id">
+                        </div>
+                        <div class="mb-2" id="editAppSecretWrap">
+                            <label class="form-label">app_secret</label>
+                            <input type="password" class="form-control" id="editAppSecret" placeholder="OAPI app_secret">
+                        </div>
+                        <div class="mb-2" id="editWebhookWrap" style="display:none;">
+                            <label class="form-label">webhook_url</label>
+                            <input type="text" class="form-control" id="editWebhookUrl" placeholder="HTTPS webhook">
+                        </div>
+                        <div class="mb-2" id="editSignWrap" style="display:none;">
+                            <label class="form-label">sign_secret</label>
+                            <input type="password" class="form-control" id="editSignSecret" placeholder="可选：该群 webhook 签名密钥">
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -101,15 +172,34 @@
                     return;
                 }
                 var html = groups.map(function(g) {
-                    var chatsHtml = (g.chat_list || []).map(function(c) {
+                    var lt = (g.list_type || 'weixin');
+                    var name = (g.name || '');
+                    var sendMode = (g.send_mode || '');
+                    var chatsHtml = (lt === 'feishu') ? '' : (g.chat_list || []).map(function(c) {
                         return '<span class="badge bg-secondary chat-tag">' + escapeHtml(c) + '</span>';
                     }).join('');
+                    var extra = '';
+                    if (lt === 'feishu') {
+                        extra = '<div class="text-muted small mt-1">' +
+                            'name=' + escapeHtml(name || '') +
+                            ' send_mode=' + escapeHtml(sendMode || '') +
+                            (g.chat_id ? (' chat_id=' + escapeHtml(g.chat_id)) : '') +
+                            (g.webhook_url ? (' webhook=' + escapeHtml(g.webhook_url).slice(0, 48) + '...') : '') +
+                            (g.sign_secret ? (' sign=***') : '') +
+                            '</div>';
+                    }
                     return '<div class="card group-card" data-id="' + g.id + '">' +
                         '<div class="card-body py-2">' +
                         '<div class="d-flex justify-content-between align-items-start">' +
                         '<div><strong>ID ' + g.group_id + '</strong> <span class="text-muted">(' + escapeHtml(g.list_type || 'weixin') + ')</span>' +
-                        '<div class="chat-list-inline mt-1">' + (chatsHtml || '<span class="text-muted">无聊天</span>') + '</div></div>' +
-                        '<div><button type="button" class="btn btn-sm btn-outline-primary me-1 editGroupBtn">编辑</button>' +
+                        '<div class="chat-list-inline mt-1">' +
+                            (chatsHtml || (lt === 'feishu' ? '<span class="text-muted">飞书 group</span>' : '<span class="text-muted">无聊天</span>')) +
+                        '</div>' +
+                        extra +
+                        '</div>' +
+                        '<div>' +
+                        (lt === 'feishu' ? '<button type="button" class="btn btn-sm btn-outline-success me-1 testSendBtn">测试发送</button>' : '') +
+                        '<button type="button" class="btn btn-sm btn-outline-primary me-1 editGroupBtn">编辑</button>' +
                         '<button type="button" class="btn btn-sm btn-outline-danger deleteGroupBtn">删除</button></div>' +
                         '</div></div></div>';
                 }).join('');
@@ -117,6 +207,14 @@
                 $('#groupList .editGroupBtn').on('click', function() {
                     var id = $(this).closest('.card').data('id');
                     openEdit(id, groups.find(function(x) { return x.id === id; }));
+                });
+                $('#groupList .testSendBtn').on('click', function() {
+                    var id = $(this).closest('.card').data('id');
+                    var g = groups.find(function(x) { return x.id === id; }) || {};
+                    var defaultMsg = '【测试消息】飞书群组测试发送：group_id=' + (g.group_id || '') + ' send_mode=' + (g.send_mode || '');
+                    var msg = window.prompt('请输入要发送的测试消息：', defaultMsg);
+                    if (msg === null) return;
+                    testSend(id, msg);
                 });
                 $('#groupList .deleteGroupBtn').on('click', function() {
                     var id = $(this).closest('.card').data('id');
@@ -133,11 +231,43 @@
             return div.innerHTML;
         }
 
+        function refreshNewDynamic() {
+            var lt = ($('#newListType').val() || 'weixin');
+            $('#newWeixinFields').toggle(lt !== 'feishu');
+            $('#newFeishuFields').toggle(lt === 'feishu');
+            var mode = ($('#newFeishuSendMode').val() || 'oapi');
+            $('#newFeishuChatIdWrap').toggle(mode === 'oapi');
+            $('#newFeishuAppIdWrap').toggle(mode === 'oapi');
+            $('#newFeishuAppSecretWrap').toggle(mode === 'oapi');
+            $('#newFeishuWebhookWrap').toggle(mode === 'https');
+            $('#newFeishuSignWrap').toggle(mode === 'https');
+        }
+
+        function refreshEditDynamic() {
+            var lt = ($('#editListType').val() || 'weixin');
+            $('#editWeixinFields').toggle(lt !== 'feishu');
+            $('#editFeishuFields').toggle(lt === 'feishu');
+            var mode = ($('#editSendMode').val() || 'oapi');
+            $('#editChatIdWrap').toggle(mode === 'oapi');
+            $('#editAppIdWrap').toggle(mode === 'oapi');
+            $('#editAppSecretWrap').toggle(mode === 'oapi');
+            $('#editWebhookWrap').toggle(mode === 'https');
+            $('#editSignWrap').toggle(mode === 'https');
+        }
+
         function openEdit(id, g) {
             $('#editId').val(id);
             $('#editGroupId').val(g.group_id);
             $('#editListType').val(g.list_type || 'weixin');
             $('#editChatList').val(formatChatList(g.chat_list));
+            $('#editName').val(g.name || '');
+            $('#editSendMode').val((g.send_mode || 'oapi'));
+            $('#editChatId').val(g.chat_id || '');
+            $('#editAppId').val(g.app_id || '');
+            $('#editAppSecret').val(g.app_secret || '');
+            $('#editWebhookUrl').val(g.webhook_url || '');
+            $('#editSignSecret').val(g.sign_secret || '');
+            refreshEditDynamic();
             new bootstrap.Modal(document.getElementById('editModal')).show();
         }
 
@@ -150,20 +280,68 @@
                 .fail(function() { alert('删除请求失败'); });
         }
 
+        function testSend(id, message) {
+            $.ajax({
+                url: '/api/chat_groups/' + id + '/test_send',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ message: message || '' })
+            }).done(function(res) {
+                if (res && res.success) alert(res.message || '发送成功');
+                else alert((res && res.message) || '发送失败');
+            }).fail(function(xhr) {
+                var msg = '发送失败';
+                try {
+                    var r = JSON.parse(xhr.responseText || '{}');
+                    if (r && r.message) msg = r.message;
+                } catch (e) {}
+                alert(msg);
+            });
+        }
+
         $('#addGroupForm').on('submit', function(e) {
             e.preventDefault();
             var groupId = parseInt($('#newGroupId').val(), 10);
             var listType = $('#newListType').val() || 'weixin';
             var chatList = parseChatList($('#newChatList').val());
+            var payload = { group_id: groupId, list_type: listType, chat_list: chatList };
+            if (listType === 'feishu') {
+                payload.chat_list = [];
+                payload.name = ($('#newFeishuName').val() || '').trim();
+                payload.send_mode = ($('#newFeishuSendMode').val() || 'oapi');
+                payload.chat_id = ($('#newFeishuChatId').val() || '').trim();
+                payload.app_id = ($('#newFeishuAppId').val() || '').trim();
+                payload.app_secret = ($('#newFeishuAppSecret').val() || '').trim();
+                payload.webhook_url = ($('#newFeishuWebhookUrl').val() || '').trim();
+                payload.sign_secret = ($('#newFeishuSignSecret').val() || '').trim();
+                if (payload.send_mode === 'oapi' && !payload.chat_id) {
+                    alert('飞书 group：send_mode=oapi 时必须填写 chat_id');
+                    return false;
+                }
+                if (payload.send_mode === 'oapi' && (!payload.app_id || !payload.app_secret)) {
+                    alert('飞书 group：send_mode=oapi 时必须填写 app_id 和 app_secret');
+                    return false;
+                }
+                if (payload.send_mode === 'https' && !payload.webhook_url) {
+                    alert('飞书 group：send_mode=https 时必须填写 webhook_url');
+                    return false;
+                }
+            }
             $.ajax({
                 url: '/api/chat_groups',
                 method: 'POST',
                 contentType: 'application/json',
-                data: JSON.stringify({ group_id: groupId, list_type: listType, chat_list: chatList })
+                data: JSON.stringify(payload)
             }).done(function(res) {
                 if (res.success) {
                     $('#newGroupId').val('');
                     $('#newChatList').val('');
+                    $('#newFeishuName').val('');
+                    $('#newFeishuChatId').val('');
+                    $('#newFeishuAppId').val('');
+                    $('#newFeishuAppSecret').val('');
+                    $('#newFeishuWebhookUrl').val('');
+                    $('#newFeishuSignSecret').val('');
                     loadGroups();
                 } else {
                     alert(res.message || '添加失败');
@@ -177,11 +355,34 @@
             var groupId = parseInt($('#editGroupId').val(), 10);
             var listType = $('#editListType').val() || 'weixin';
             var chatList = parseChatList($('#editChatList').val());
+            var payload = { group_id: groupId, list_type: listType, chat_list: chatList };
+            if (listType === 'feishu') {
+                payload.chat_list = [];
+                payload.name = ($('#editName').val() || '').trim();
+                payload.send_mode = ($('#editSendMode').val() || 'oapi');
+                payload.chat_id = ($('#editChatId').val() || '').trim();
+                payload.app_id = ($('#editAppId').val() || '').trim();
+                payload.app_secret = ($('#editAppSecret').val() || '').trim();
+                payload.webhook_url = ($('#editWebhookUrl').val() || '').trim();
+                payload.sign_secret = ($('#editSignSecret').val() || '').trim();
+                if (payload.send_mode === 'oapi' && !payload.chat_id) {
+                    alert('飞书 group：send_mode=oapi 时必须填写 chat_id');
+                    return;
+                }
+                if (payload.send_mode === 'oapi' && (!payload.app_id || !payload.app_secret)) {
+                    alert('飞书 group：send_mode=oapi 时必须填写 app_id 和 app_secret');
+                    return;
+                }
+                if (payload.send_mode === 'https' && !payload.webhook_url) {
+                    alert('飞书 group：send_mode=https 时必须填写 webhook_url');
+                    return;
+                }
+            }
             $.ajax({
                 url: '/api/chat_groups/' + id,
                 method: 'PUT',
                 contentType: 'application/json',
-                data: JSON.stringify({ group_id: groupId, list_type: listType, chat_list: chatList })
+                data: JSON.stringify(payload)
             }).done(function(res) {
                 if (res.success) {
                     bootstrap.Modal.getInstance(document.getElementById('editModal')).hide();
@@ -192,7 +393,15 @@
             }).fail(function() { alert('保存请求失败'); });
         });
 
-        $(document).ready(loadGroups);
+        $('#newListType').on('change', refreshNewDynamic);
+        $('#newFeishuSendMode').on('change', refreshNewDynamic);
+        $('#editListType').on('change', refreshEditDynamic);
+        $('#editSendMode').on('change', refreshEditDynamic);
+
+        $(document).ready(function() {
+            refreshNewDynamic();
+            loadGroups();
+        });
     </script>
 </body>
 </html>

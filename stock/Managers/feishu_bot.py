@@ -58,40 +58,31 @@ def _normalize_feishu_text(text: str) -> tuple[str, bool]:
     return s[:FEISHU_TEXT_MAX_LEN], True
 
 
-def send_feishu_text(
+def _feishu_webhook_post_json(
     webhook_url: str,
-    text: str,
+    payload: dict,
     *,
     timeout: float = 10.0,
     sign_secret: Optional[str] = None,
 ) -> bool:
-    """
-    向飞书机器人 Webhook POST 一条 text 消息。
-    sign_secret 非空时附带 timestamp（当前秒级时间戳字符串）与 sign（按飞书规则计算）。
-    返回 True 表示 HTTP 与业务码均成功。
-    """
+    """向自定义机器人 Webhook POST JSON；成功判据与 send_feishu_text 一致。"""
     url = (webhook_url or "").strip()
     if not url:
         logger.error("飞书 Webhook URL 为空，跳过发送")
         return False
 
-    body, truncated = _normalize_feishu_text(text)
-    if truncated:
-        body = body + "\n...(截断)"
-
-    redacted = redact_feishu_webhook(url)
-    payload: dict = {"msg_type": "text", "content": {"text": body}}
-
+    body = dict(payload)
     sk = (sign_secret or "").strip()
     if sk:
         ts = str(int(time.time()))
-        payload["timestamp"] = ts
-        payload["sign"] = feishu_gen_sign(ts, sk)
+        body["timestamp"] = ts
+        body["sign"] = feishu_gen_sign(ts, sk)
 
+    redacted = redact_feishu_webhook(url)
     try:
         resp = requests.post(
             url,
-            json=payload,
+            json=body,
             headers={"Content-Type": "application/json"},
             timeout=timeout,
         )
@@ -114,7 +105,6 @@ def send_feishu_text(
         logger.error("飞书 Webhook 响应非 JSON [%s]: %s", redacted, (resp.text or "")[:500])
         return False
 
-    # 飞书机器人常见字段：StatusCode / StatusMessage 或 code / msg
     sc = data.get("StatusCode")
     code = data.get("code")
     if sc == 0 or code == 0:
@@ -132,6 +122,52 @@ def send_feishu_text(
 
     logger.error("飞书 Webhook 未识别成功态 [%s]: %s", redacted, str(data)[:500])
     return False
+
+
+def send_feishu_text(
+    webhook_url: str,
+    text: str,
+    *,
+    timeout: float = 10.0,
+    sign_secret: Optional[str] = None,
+) -> bool:
+    """
+    向飞书机器人 Webhook POST 一条 text 消息。
+    sign_secret 非空时附带 timestamp（当前秒级时间戳字符串）与 sign（按飞书规则计算）。
+    返回 True 表示 HTTP 与业务码均成功。
+    """
+    body, truncated = _normalize_feishu_text(text)
+    if truncated:
+        body = body + "\n...(截断)"
+    return _feishu_webhook_post_json(
+        webhook_url,
+        {"msg_type": "text", "content": {"text": body}},
+        timeout=timeout,
+        sign_secret=sign_secret,
+    )
+
+
+def send_feishu_image(
+    webhook_url: str,
+    image_key: str,
+    *,
+    timeout: float = 15.0,
+    sign_secret: Optional[str] = None,
+) -> bool:
+    """
+    Webhook 发送图片消息（须先通过开放平台上传图片拿到 image_key）。
+    文档：msg_type=image，content.image_key。
+    """
+    key = (image_key or "").strip()
+    if not key:
+        logger.error("飞书 image_key 为空，跳过发送图片")
+        return False
+    return _feishu_webhook_post_json(
+        webhook_url,
+        {"msg_type": "image", "content": {"image_key": key}},
+        timeout=timeout,
+        sign_secret=sign_secret,
+    )
 
 
 @contextmanager

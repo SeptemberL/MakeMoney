@@ -7,9 +7,8 @@
     .text-yellow { color: #ffc107; } /* 接近 Bootstrap warning 黄 */
 
     /* Excel-like 样式 */
-    /* 进入自选页隐藏顶部导航栏 + 标题（与持仓页行为一致） */
+    /* 进入自选页隐藏顶部导航栏（与持仓页行为一致）；标题栏保留，用于显示自选图标与名称 */
     nav.navbar { display: none !important; }
-    .watchlist-page-title { display: none !important; }
     .watchlist-excel-page {
       width: 100%;
       padding: 8px 12px;
@@ -104,8 +103,10 @@
     }
   </style>
 
-  <div class="d-flex justify-content-between align-items-center">
-    <h2 class="mb-0 watchlist-page-title">自选列表</h2>
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h2 class="h5 mb-0 d-flex align-items-center fw-semibold">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="1.25em" height="1.25em" fill="#ffc107" class="me-2 flex-shrink-0" aria-hidden="true"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>自选列表
+    </h2>
     <div>
       <a href="/" class="btn btn-sm btn-outline-secondary me-2" title="回到主页">
         <i class="fas fa-home"></i>
@@ -126,7 +127,7 @@
         <i class="fas fa-plus"></i>
       </button>
     </div>
-    <div class="form-text text-muted">添加后会“只加不删”，持仓里的股票也会默认进入。</div>
+    <div class="form-text text-muted">可点击表格中「删除」移除自选；若该股仍在持仓中，本机将记住不再从持仓自动合并进自选（重新手动添加可恢复）。</div>
     <div class="form-text mt-1" id="wlSyncHint"></div>
   </div>
 
@@ -194,6 +195,11 @@
                         data-stock-code="{{ w.stock_code or '' }}"
                         data-stock-name="{{ w.stock_name or '' }}">
                   <i class="fas fa-tools"></i>
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-danger ms-1 wl-delete-btn"
+                        title="从自选移除"
+                        data-stock-code="{{ w.stock_code or '' }}">
+                  <i class="fas fa-trash-alt"></i>
                 </button>
               </td>
             </tr>
@@ -481,6 +487,8 @@
 
     // 自选：已登录用户写入数据库（跨设备）；未登录仍用 localStorage
     const WATCHLIST_STORAGE_KEY = 'watchlist_items_v1';
+    /** 用户主动删除自选后，避免下次打开页面又从「持仓合并」把同代码加回来（按 basic key，仅存本机） */
+    const WATCHLIST_SUPPRESS_FROM_POSITIONS_KEY = 'watchlist_suppress_position_merge_v1';
     let wlUseServerSync = false;
 
     /** 当前页权威自选顺序（与持久化一致）；列排序仅重排 DOM，不修改本数组 */
@@ -779,6 +787,57 @@
       }
     }
 
+    /**
+     * 从自选移除一行：已登录先调 DELETE，再更新 wlItems 与 DOM；并记录 suppress，避免持仓合并再次加回。
+     */
+    async function removeWatchlistByCode(stockCode) {
+      const code = String(stockCode || '').trim();
+      if (!code) return;
+      if (!confirm(`确定从自选中移除「${code}」？`)) return;
+
+      if (wlUseServerSync) {
+        try {
+          const resp = await fetch('/api/watchlist/' + encodeURIComponent(code), {
+            method: 'DELETE',
+            credentials: 'same-origin',
+          });
+          let data = {};
+          try {
+            data = await resp.json();
+          } catch (e) {
+            data = {};
+          }
+          if (!resp.ok || !data.success) {
+            alert((data && data.message) || '删除失败');
+            return;
+          }
+        } catch (e) {
+          alert('删除失败，请稍后重试');
+          return;
+        }
+      }
+
+      addWlSuppressKey(code);
+
+      const basic = normalizeBasicKey(code);
+      wlItems = (wlItems || []).filter((i) => normalizeBasicKey(i.stock_code) !== basic);
+      if (!wlUseServerSync) {
+        saveWatchlistItems(wlItems);
+      }
+
+      const rows = [...document.querySelectorAll('#watchlist-table tbody tr.watchlist-row')];
+      const tr = rows.find((r) => normalizeBasicKey(r.getAttribute('data-stock-code') || '') === basic);
+      if (tr) tr.remove();
+
+      const rest = document.querySelectorAll('#watchlist-table tbody tr.watchlist-row');
+      if (!rest.length) {
+        renderWatchlistItems([]);
+      } else {
+        renumberWlRowHeaders();
+        refreshQuotesOnce();
+      }
+    }
+
     async function getWatchlistItemsForEdit() {
       if (!wlUseServerSync) {
         return loadWatchlistItems();
@@ -839,6 +898,40 @@
       const c = String(code || '').trim();
       if (!c) return '';
       return c.split('.', 1)[0].trim();
+    }
+
+    function loadWlSuppressKeys() {
+      try {
+        const raw = localStorage.getItem(WATCHLIST_SUPPRESS_FROM_POSITIONS_KEY);
+        if (!raw) return new Set();
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return new Set();
+        return new Set(arr.map(normalizeBasicKey).filter(Boolean));
+      } catch (e) {
+        return new Set();
+      }
+    }
+
+    function saveWlSuppressKeys(set) {
+      try {
+        localStorage.setItem(WATCHLIST_SUPPRESS_FROM_POSITIONS_KEY, JSON.stringify([...(set || [])]));
+      } catch (e) {}
+    }
+
+    function addWlSuppressKey(code) {
+      const k = normalizeBasicKey(code);
+      if (!k) return;
+      const s = loadWlSuppressKeys();
+      s.add(k);
+      saveWlSuppressKeys(s);
+    }
+
+    function removeWlSuppressKey(code) {
+      const k = normalizeBasicKey(code);
+      if (!k) return;
+      const s = loadWlSuppressKeys();
+      s.delete(k);
+      saveWlSuppressKeys(s);
     }
 
     /** 服务器列表优先，再把本机 localStorage 中多出的代码合并进来（首次登录迁移） */
@@ -971,6 +1064,11 @@
                     data-stock-code="${escapeHtml(it.stock_code || '')}"
                     data-stock-name="${escapeHtml(it.stock_name || '')}">
               <i class="fas fa-tools"></i>
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-danger ms-1 wl-delete-btn"
+                    title="从自选移除"
+                    data-stock-code="${escapeHtml(it.stock_code || '')}">
+              <i class="fas fa-trash-alt"></i>
             </button>
           </td>
         `;
@@ -1286,7 +1384,31 @@
       });
       const data = await resp.json();
       if (data && data.success) {
-        alert(`测试完成，实时价 ${Number(data.price || 0).toFixed(3)}，触发 ${data.triggered || 0} 条信号`);
+        const st = data.card_image_status || {};
+        const ch = st.notify_channel || '';
+        const on = !!st.feishu_send_card_image;
+        const will = !!st.card_image_will_attempt;
+        const checks = Array.isArray(st.group_checks) ? st.group_checks : [];
+        let extra = '';
+        extra += `\n\n[卡片图状态] channel=${ch || '-'} 开关=${on ? 'ON' : 'OFF'} 将尝试发图=${will ? 'YES' : 'NO'}`;
+        if (checks.length) {
+          extra += `\n[group 检查]`;
+          checks.slice(0, 8).forEach((c) => {
+            if (!c) return;
+            const gid = c.group_id != null ? c.group_id : '?';
+            if (c.ok === false && c.reason) {
+              extra += `\n- gid=${gid}: ${c.reason}`;
+              return;
+            }
+            const hasCred = !!c.has_app_credentials;
+            extra += `\n- gid=${gid} mode=${c.send_mode || '-'} app_id/app_secret=${hasCred ? 'OK' : 'MISSING'}`;
+          });
+        }
+        const hints = Array.isArray(st.card_image_hints) ? st.card_image_hints : [];
+        if (hints.length) {
+          extra += `\n[提示] ${hints.join('；')}`;
+        }
+        alert(`测试完成，实时价 ${Number(data.price || 0).toFixed(3)}，触发 ${data.triggered || 0} 条信号${extra}`);
       } else {
         alert((data && data.message) || '测试失败');
       }
@@ -1314,10 +1436,14 @@
 
       // 拉取当前持仓，把持仓股票“加到”自选缓存（不删除历史项）
       try {
+        const suppressed = loadWlSuppressKeys();
         const resp = await fetch('/api/positions/simple', { credentials: 'same-origin' });
         const data = await resp.json();
         if (data && data.success && Array.isArray(data.positions)) {
-          items = upsertItemsFromPositions(items, data.positions);
+          const filtered = data.positions.filter(
+            (p) => !suppressed.has(normalizeBasicKey(p.stock_code))
+          );
+          items = upsertItemsFromPositions(items, filtered);
         }
       } catch (e) {
         // 忽略：无网络/接口失败时仍显示缓存内容
@@ -1330,6 +1456,18 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       watchlistSignalModal = new bootstrap.Modal(document.getElementById('watchlistSignalModal'));
+
+      const wlTable = document.getElementById('watchlist-table');
+      if (wlTable) {
+        wlTable.addEventListener('click', (e) => {
+          const btn = e.target.closest && e.target.closest('.wl-delete-btn');
+          if (!btn) return;
+          e.preventDefault();
+          const sc = btn.getAttribute('data-stock-code') || '';
+          removeWatchlistByCode(sc);
+        });
+      }
+
       initWatchlistItems().finally(() => {
         // 阶段六 5：交易时间内每 3 秒刷新；非交易时间只刷新一次（打开页面时已完成初次刷新）
         function inTradingHours() {
@@ -1353,6 +1491,8 @@
 
         const basicCode = normalizeBasicKey(codeRaw);
         if (!basicCode) return;
+
+        removeWlSuppressKey(codeRaw);
 
         let items = wlItems.length
           ? wlItems.map((i) => ({ stock_code: i.stock_code, stock_name: i.stock_name }))

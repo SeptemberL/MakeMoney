@@ -8,6 +8,7 @@ pandas>=2.0.0
 numpy>=1.24.0
 akshare>=1.16.0
 mysql-connector-python>=8.0.0
+redis>=5.0.0
 
 # 技术指标（macOS 可选：brew install ta-lib 后安装 TA-Lib）
 TA-Lib>=0.4.28
@@ -19,10 +20,16 @@ APScheduler>=3.10.0
 # 配置与工具
 PyYAML>=6.0
 
+# 飞书开放平台（OAPI）
+lark-oapi==1.5.3
+
 # 爬虫与请求
 requests>=2.28.0
 beautifulsoup4>=4.12.0
 selenium>=4.0.0
+
+# LLM / Gemini
+google-genai
 
 # 加密货币（stock_gatter）
 ccxt>=4.0.0
@@ -30,6 +37,7 @@ ccxt>=4.0.0
 # 图表
 matplotlib>=3.8.0
 mplfinance>=0.12.10b0
+Pillow>=10.0.0
 
 # Windows 微信自动化（仅 Windows 需要，可选）
 # wxauto>=3.9.11.17.5

@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>定时任务管理</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+<div class="container mt-4 mb-5">
+    <h3><i class="fas fa-clock me-2"></i>定时任务（APScheduler）</h3>
+    <p class="text-muted small">
+        运行期配置以数据库表 <code>scheduled_task</code> 为准；首次空表或 YAML 中有新 <code>task_id</code> 时会从
+        <code>configs/tasks_config.yaml</code> 合并导入（已有 ID 不会被 YAML 覆盖）。
+        NGA 监控、<code>schedule</code> 库轮询等不在此页展示。
+    </p>
+    <div class="d-flex flex-wrap gap-2 mb-3">
+        <button type="button" class="btn btn-primary" id="btnRefresh">刷新</button>
+        <button type="button" class="btn btn-success" id="btnNew">新建任务</button>
+    </div>
+    <div id="alertArea"></div>
+    <div class="table-responsive">
+        <table class="table table-sm table-bordered align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>任务 ID</th>
+                    <th>名称</th>
+                    <th>模块.函数</th>
+                    <th>触发器</th>
+                    <th>每日仅一次</th>
+                    <th>启用</th>
+                    <th>调度</th>
+                    <th>下次运行</th>
+                    <th style="min-width:220px;">操作</th>
+                </tr>
+            </thead>
+            <tbody id="taskTbody">
+                <tr><td colspan="9" class="text-center text-muted">加载中…</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="modal fade" id="taskModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="taskModalTitle">编辑任务</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="taskForm" class="row g-3">
+                    <input type="hidden" id="f_mode" value="edit">
+                    <div class="col-md-6">
+                        <label class="form-label">task_id</label>
+                        <input class="form-control" id="f_task_id" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">任务名称</label>
+                        <input class="form-control" id="f_task_name" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">module_path</label>
+                        <input class="form-control" id="f_module_path" placeholder="tasks.check_lof" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">function_name</label>
+                        <input class="form-control" id="f_function_name" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">trigger_type</label>
+                        <select class="form-select" id="f_trigger_type">
+                            <option value="cron">cron</option>
+                            <option value="interval">interval</option>
+                            <option value="date">date</option>
+                        </select>
+                    </div>
+                    <div class="col-md-8">
+                        <label class="form-label">trigger_args（JSON）</label>
+                        <textarea class="form-control font-monospace" id="f_trigger_args" rows="3" placeholder='{"hour":14,"minute":45}'></textarea>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">max_instances</label>
+                        <input type="number" class="form-control" id="f_max_instances" value="1" min="1">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">misfire_grace_time（秒，可空）</label>
+                        <input type="number" class="form-control" id="f_misfire" placeholder="300">
+                    </div>
+                    <div class="col-md-4 d-flex align-items-end">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="f_coalesce" checked>
+                            <label class="form-check-label" for="f_coalesce">coalesce</label>
+                        </div>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">description</label>
+                        <input class="form-control" id="f_description">
+                    </div>
+                    <div class="col-12">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="f_enabled" checked>
+                            <label class="form-check-label" for="f_enabled">启用（写入 YAML 并尝试注册调度）</label>
+                        </div>
+                    </div>
+                    <div class="col-12">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="f_run_once_per_day">
+                            <label class="form-check-label" for="f_run_once_per_day">每天只执行 1 次（成功执行后同一天跳过）</label>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="btnSaveTask">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+(function () {
+    const tbody = document.getElementById('taskTbody');
+    const alertArea = document.getElementById('alertArea');
+    const modalEl = document.getElementById('taskModal');
+    const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+
+    function showAlert(msg, kind) {
+        alertArea.innerHTML = '<div class="alert alert-' + (kind || 'danger') + ' py-2">' + escapeHtml(msg) + '</div>';
+    }
+    function clearAlert() { alertArea.innerHTML = ''; }
+    function escapeHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    function schedLabel(row) {
+        if (!row.enabled) return '<span class="badge bg-secondary">未启用</span>';
+        if (!row.in_scheduler) return '<span class="badge bg-warning text-dark">未注册</span>';
+        if (row.paused) return '<span class="badge bg-info text-dark">已暂停</span>';
+        return '<span class="badge bg-success">运行中</span>';
+    }
+
+    async function refreshList() {
+        clearAlert();
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">加载中…</td></tr>';
+        const r = await fetch('/api/scheduled_tasks');
+        const j = await r.json();
+        if (!j.success) {
+            tbody.innerHTML = '<tr><td colspan="9" class="text-danger">加载失败：' + escapeHtml(j.message || '') + '</td></tr>';
+            return;
+        }
+        const tasks = j.tasks || [];
+        if (tasks.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">暂无任务（请检查 YAML 或新建）</td></tr>';
+            return;
+        }
+        tbody.innerHTML = tasks.map(function (row) {
+            const mf = row.module_path + '.' + row.function_name;
+            const trig = row.trigger_type + ' ' + JSON.stringify(row.trigger_args || {});
+            const next = row.next_run_time || '—';
+            const id = row.task_id;
+            return '<tr data-id="' + escapeHtml(id) + '">' +
+                '<td><code>' + escapeHtml(id) + '</code></td>' +
+                '<td>' + escapeHtml(row.task_name || '') + '</td>' +
+                '<td><small>' + escapeHtml(mf) + '</small></td>' +
+                '<td><small>' + escapeHtml(trig) + '</small></td>' +
+                '<td>' + (row.run_once_per_day ? '是' : '否') + '</td>' +
+                '<td>' + (row.enabled ? '是' : '否') + '</td>' +
+                '<td>' + schedLabel(row) + '</td>' +
+                '<td><small>' + escapeHtml(next) + '</small></td>' +
+                '<td class="text-nowrap">' +
+                '<button type="button" class="btn btn-sm btn-outline-primary btn-edit">编辑</button> ' +
+                '<button type="button" class="btn btn-sm btn-outline-secondary btn-pause">暂停</button> ' +
+                '<button type="button" class="btn btn-sm btn-outline-secondary btn-resume">恢复</button> ' +
+                '<button type="button" class="btn btn-sm btn-outline-danger btn-del">删除</button>' +
+                '</td></tr>';
+        }).join('');
+
+        tbody.querySelectorAll('.btn-edit').forEach(function (btn, i) {
+            btn.addEventListener('click', function () { openEdit(tasks[i]); });
+        });
+        tbody.querySelectorAll('.btn-pause').forEach(function (btn, i) {
+            btn.addEventListener('click', function () { doPause(tasks[i].task_id); });
+        });
+        tbody.querySelectorAll('.btn-resume').forEach(function (btn, i) {
+            btn.addEventListener('click', function () { doResume(tasks[i].task_id); });
+        });
+        tbody.querySelectorAll('.btn-del').forEach(function (btn, i) {
+            btn.addEventListener('click', function () { doDelete(tasks[i].task_id); });
+        });
+    }
+
+    function openNew() {
+        document.getElementById('taskModalTitle').textContent = '新建任务';
+        document.getElementById('f_mode').value = 'create';
+        document.getElementById('f_task_id').disabled = false;
+        document.getElementById('f_task_id').value = '';
+        document.getElementById('f_task_name').value = '';
+        document.getElementById('f_module_path').value = '';
+        document.getElementById('f_function_name').value = '';
+        document.getElementById('f_trigger_type').value = 'cron';
+        document.getElementById('f_trigger_args').value = '{"hour": 14, "minute": 45}';
+        document.getElementById('f_max_instances').value = '1';
+        document.getElementById('f_misfire').value = '';
+        document.getElementById('f_coalesce').checked = true;
+        document.getElementById('f_description').value = '';
+        document.getElementById('f_enabled').checked = true;
+        document.getElementById('f_run_once_per_day').checked = false;
+        modal.show();
+    }
+
+    function openEdit(row) {
+        document.getElementById('taskModalTitle').textContent = '编辑任务';
+        document.getElementById('f_mode').value = 'edit';
+        document.getElementById('f_task_id').disabled = true;
+        document.getElementById('f_task_id').value = row.task_id;
+        document.getElementById('f_task_name').value = row.task_name || '';
+        document.getElementById('f_module_path').value = row.module_path || '';
+        document.getElementById('f_function_name').value = row.function_name || '';
+        document.getElementById('f_trigger_type').value = row.trigger_type || 'cron';
+        document.getElementById('f_trigger_args').value = JSON.stringify(row.trigger_args || {}, null, 0);
+        document.getElementById('f_max_instances').value = String(row.max_instances != null ? row.max_instances : 1);
+        document.getElementById('f_misfire').value = row.misfire_grace_time != null ? String(row.misfire_grace_time) : '';
+        document.getElementById('f_coalesce').checked = !!row.coalesce;
+        document.getElementById('f_description').value = row.description || '';
+        document.getElementById('f_enabled').checked = !!row.enabled;
+        document.getElementById('f_run_once_per_day').checked = !!row.run_once_per_day;
+        modal.show();
+    }
+
+    function collectPayload() {
+        const mg = document.getElementById('f_misfire').value.trim();
+        let trigger_args;
+        try {
+            trigger_args = JSON.parse(document.getElementById('f_trigger_args').value || '{}');
+        } catch (e) {
+            throw new Error('trigger_args 不是合法 JSON');
+        }
+        return {
+            task_id: document.getElementById('f_task_id').value.trim(),
+            task_name: document.getElementById('f_task_name').value.trim(),
+            module_path: document.getElementById('f_module_path').value.trim(),
+            function_name: document.getElementById('f_function_name').value.trim(),
+            trigger_type: document.getElementById('f_trigger_type').value,
+            trigger_args: trigger_args,
+            max_instances: parseInt(document.getElementById('f_max_instances').value, 10) || 1,
+            misfire_grace_time: mg === '' ? null : parseInt(mg, 10),
+            coalesce: document.getElementById('f_coalesce').checked,
+            description: document.getElementById('f_description').value.trim(),
+            run_once_per_day: document.getElementById('f_run_once_per_day').checked,
+            enabled: document.getElementById('f_enabled').checked
+        };
+    }
+
+    async function doSave() {
+        clearAlert();
+        let payload;
+        try {
+            payload = collectPayload();
+        } catch (e) {
+            showAlert(e.message || String(e));
+            return;
+        }
+        const mode = document.getElementById('f_mode').value;
+        let url, method;
+        if (mode === 'create') {
+            url = '/api/scheduled_tasks';
+            method = 'POST';
+        } else {
+            url = '/api/scheduled_tasks/' + encodeURIComponent(payload.task_id);
+            method = 'PUT';
+        }
+        const r = await fetch(url, {
+            method: method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const j = await r.json();
+        if (!j.success) {
+            showAlert(j.message || '保存失败');
+            return;
+        }
+        modal.hide();
+        showAlert('已保存', 'success');
+        await refreshList();
+    }
+
+    async function doPause(taskId) {
+        clearAlert();
+        const r = await fetch('/api/scheduled_tasks/' + encodeURIComponent(taskId) + '/pause', { method: 'POST' });
+        const j = await r.json();
+        if (!j.success) showAlert(j.message || '暂停失败');
+        await refreshList();
+    }
+
+    async function doResume(taskId) {
+        clearAlert();
+        const r = await fetch('/api/scheduled_tasks/' + encodeURIComponent(taskId) + '/resume', { method: 'POST' });
+        const j = await r.json();
+        if (!j.success) showAlert(j.message || '恢复失败');
+        await refreshList();
+    }
+
+    async function doDelete(taskId) {
+        if (!confirm('确定删除任务 ' + taskId + ' ?')) return;
+        clearAlert();
+        const r = await fetch('/api/scheduled_tasks/' + encodeURIComponent(taskId), { method: 'DELETE' });
+        const j = await r.json();
+        if (!j.success) showAlert(j.message || '删除失败');
+        else showAlert('已删除', 'success');
+        await refreshList();
+    }
+
+    document.getElementById('btnRefresh').addEventListener('click', refreshList);
+    document.getElementById('btnNew').addEventListener('click', openNew);
+    document.getElementById('btnSaveTask').addEventListener('click', doSave);
+    modalEl.addEventListener('hidden.bs.modal', function () { clearAlert(); });
+
+    refreshList();
+})();
+</script>
+</body>
+</html>

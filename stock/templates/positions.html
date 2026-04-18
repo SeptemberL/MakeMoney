@@ -115,6 +115,7 @@
         <th class="excel-colhdr">E</th>
         <th class="excel-colhdr">F</th>
         <th class="excel-colhdr">G</th>
+        <th class="excel-colhdr">H</th>
       </tr>
       <tr>
         <th class="excel-corner"></th>
@@ -125,6 +126,7 @@
         <th class="text-end">成本价/当前价</th>
         <th class="text-end">浮盈/浮亏(元/% )</th>
         <th class="text-end">总市值</th>
+        <th class="text-center">操作</th>
       </tr>
     </thead>
     <tbody>
@@ -153,7 +155,7 @@
           </td>
           <td class="text-end current-price-cell" data-stock-code="{{ p.stock_code }}">
             {% if cur is not none %}
-              <span class="day-price">{{ '%.2f'|format(cur) }}</span>/<span class="day-pct">-</span>
+              <span class="day-price">{{ '%.3f'|format(cur) }}</span>/<span class="day-pct">-</span>
             {% else %}
               -
             {% endif %}
@@ -167,7 +169,7 @@
           </td>
           <td class="text-end qty-cell" data-real="{{ '%.2f'|format(p.quantity or 0) }}">{{ '%.2f'|format(p.quantity or 0) }}</td>
           <td class="text-end cost-cur-cell" data-stock-code="{{ p.stock_code }}">
-            <span>{{ '%.2f'|format(cp) }}/</span><span class="cur-part">{% if cur is not none %}{{ '%.2f'|format(cur) }}{% else %}-{% endif %}</span>
+            <span>{{ '%.3f'|format(cp) }}/</span><span class="cur-part">{% if cur is not none %}{{ '%.3f'|format(cur) }}{% else %}-{% endif %}</span>
           </td>
           <td class="text-end pnl-cell" data-stock-code="{{ p.stock_code }}">
             {% if pnl is not none %}
@@ -188,12 +190,21 @@
           <td class="text-end total-value-cell" data-stock-code="{{ p.stock_code }}" data-real="{% if p.total_value is not none %}{{ '%.2f'|format(p.total_value) }}{% else %}-{% endif %}">
             {% if p.total_value is not none %}{{ '%.2f'|format(p.total_value) }}{% else %}-{% endif %}
           </td>
+          <td class="text-center">
+            <button type="button"
+                    class="excel-link-btn text-danger position-remove-btn"
+                    title="删除当前持仓快照（历史流水仍保留）"
+                    data-stock-code="{{ p.stock_code }}"
+                    data-stock-name="{{ (p.stock_name or '')|e }}">
+              删除持仓
+            </button>
+          </td>
         </tr>
         {% endfor %}
       {% else %}
         <tr>
           <td class="excel-rowhdr">1</td>
-          <td colspan="7" class="text-center text-muted">暂无持仓数据</td>
+          <td colspan="8" class="text-center text-muted">暂无持仓数据</td>
         </tr>
       {% endif %}
     </tbody>
@@ -241,7 +252,7 @@
           <div class="row g-2 mt-2">
             <div class="col-md-3">
               <label class="form-label">价格</label>
-              <input type="number" step="0.01" class="form-control" id="tm_price" required>
+              <input type="number" step="0.001" class="form-control" id="tm_price" required>
             </div>
             <div class="col-md-3">
               <label class="form-label">数量</label>
@@ -418,7 +429,7 @@
           setText(priceCell, '-');
         } else {
           if (priceEl) {
-            setText(priceEl, curPrice.toFixed(2));
+            setText(priceEl, curPrice.toFixed(3));
             priceEl.classList.remove('text-purple', 'text-yellow');
           }
           if (pctEl) {
@@ -435,7 +446,7 @@
             }
           } else {
             // 兜底：若 DOM 结构被替换，回写成纯文本
-            setText(priceCell, curPrice.toFixed(2) + '/' + pctTxt);
+            setText(priceCell, curPrice.toFixed(3) + '/' + pctTxt);
           }
         }
       }
@@ -445,11 +456,11 @@
       if (costCurCell) {
         costCurCell.classList.remove('text-purple', 'text-yellow');
         if (curPrice != null) {
-          costCurCell.innerHTML = '<span>' + cp.toFixed(2) + '/</span><span class="cur-part">' + curPrice.toFixed(2) + '</span>';
+          costCurCell.innerHTML = '<span>' + cp.toFixed(3) + '/</span><span class="cur-part">' + curPrice.toFixed(3) + '</span>';
           if (cp < curPrice) costCurCell.classList.add('text-purple');
           else if (cp > curPrice) costCurCell.classList.add('text-yellow');
         } else {
-          costCurCell.innerHTML = '<span>' + cp.toFixed(2) + '/</span><span class="cur-part">-</span>';
+          costCurCell.innerHTML = '<span>' + cp.toFixed(3) + '/</span><span class="cur-part">-</span>';
         }
       }
 
@@ -748,7 +759,7 @@
               }
               tr.appendChild(td(r.trade_date || '', ''));
               tr.appendChild(td(r.action === 'buy' ? '买入' : '卖出', ''));
-              tr.appendChild(td((r.price || 0).toFixed(2), 'text-end'));
+              tr.appendChild(td((r.price || 0).toFixed(3), 'text-end'));
               tr.appendChild(td((r.quantity || 0).toFixed(2), 'text-end'));
               tr.appendChild(td((r.fee || 0).toFixed(2), 'text-end'));
               tr.appendChild(td((r.amount || 0).toFixed(2), 'text-end'));
@@ -782,6 +793,34 @@
         var code = btn.getAttribute('data-stock-code');
         loadHistory(code);
       }
+    });
+
+    document.addEventListener('click', function(e) {
+      var delBtn = e.target.closest('.position-remove-btn');
+      if (!delBtn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var code = delBtn.getAttribute('data-stock-code') || '';
+      var nm = (delBtn.getAttribute('data-stock-name') || '').trim() || code;
+      if (!code) return;
+      var msg = '确定删除「' + nm + '」（' + code + '）的持仓吗？\n仅移除当前持仓记录，历史交易流水仍会保留。';
+      if (!window.confirm(msg)) return;
+      delBtn.disabled = true;
+      fetch('/api/positions/' + encodeURIComponent(code), { method: 'DELETE' })
+        .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, status: r.status, j: j }; }); })
+        .then(function(res) {
+          if (!res.ok || !res.j || !res.j.success) {
+            var m = (res.j && res.j.message) ? res.j.message : '删除失败';
+            window.alert(m);
+            delBtn.disabled = false;
+            return;
+          }
+          window.location.reload();
+        })
+        .catch(function() {
+          window.alert('删除失败');
+          delBtn.disabled = false;
+        });
     });
   })();
 </script>

@@ -37,6 +37,45 @@ class Config:
         except:
             return None
 
+    def get_gemini_api_key(self):
+        """
+        Gemini API Key（仅服务端使用）。
+        优先级：环境变量 GEMINI_API_KEY > GOOGLE_API_KEY > config.ini 的 [GEMINI] api_key（仅建议本地开发）
+        """
+        k = (os.getenv("GEMINI_API_KEY") or "").strip()
+        if k:
+            return k
+        k = (os.getenv("GOOGLE_API_KEY") or "").strip()
+        if k:
+            return k
+        try:
+            k = (self._config.get("GEMINI", "api_key", fallback="") or "").strip()
+        except Exception:
+            k = ""
+        return k or None
+
+    def get_gemini_model(self) -> str:
+        """默认 Gemini 模型标识；未配置回退为合理默认值。"""
+        try:
+            v = (self._config.get("GEMINI", "model", fallback="") or "").strip()
+        except Exception:
+            v = ""
+        return v or "gemini-1.5-flash"
+
+    def get_gemini_timeout_seconds(self) -> float:
+        """Gemini 调用超时（秒），默认 60，非法则回退 60。"""
+        try:
+            v = (self._config.get("GEMINI", "timeout_seconds", fallback="") or "").strip()
+        except Exception:
+            v = ""
+        if not v:
+            return 60.0
+        try:
+            t = float(v)
+        except ValueError:
+            return 60.0
+        return t if t > 0 else 60.0
+
     def get_notify_channel(self) -> str:
         """信号等通知通道：wechat（默认）或 feishu。非法值回退 wechat。"""
         try:

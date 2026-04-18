@@ -32,6 +32,8 @@ class TaskConfig:
     function_name: str  # 函数名
     trigger_type: TriggerType
     trigger_args: Dict[str, Any]
+    # 每天只执行一次（以本机日期为准；仅在任务成功完成后记录为“已执行”）
+    run_once_per_day: bool = False
     enabled: bool = True
     max_instances: int = 1
     misfire_grace_time: Optional[int] = None
@@ -65,7 +67,8 @@ class TaskExecutor:
     @staticmethod
     def execute_function(module_path: str, function_name: str, 
                         task_id: str = None, task_name: str = None,
-                        args: tuple = (), kwargs: Dict[str, Any] = None):
+                        args: tuple = (), kwargs: Dict[str, Any] = None,
+                        run_once_per_day: bool = False):
         """
         执行指定模块的函数
         
@@ -81,6 +84,22 @@ class TaskExecutor:
         task_identifier = task_name or task_id or f"{module_path}.{function_name}"
         
         try:
+            if run_once_per_day and task_id:
+                try:
+                    from database.database import Database
+
+                    db = Database.Create()
+                    try:
+                        db.ensure_scheduled_task_run_daily_tables()
+                        if db.has_scheduled_task_run_today(task_id):
+                            logger.info("任务今日已执行过，跳过: %s", task_identifier)
+                            return {"skipped": 1, "reason": "already_ran_today"}
+                    finally:
+                        db.close()
+                except Exception as e:
+                    # 记录失败不应阻断任务执行
+                    logger.warning("检查每日只跑一次失败（忽略，继续执行）task=%s err=%s", task_identifier, e)
+
             logger.info(f"开始执行任务: {task_identifier}")
             start_time = datetime.now()
             
@@ -97,6 +116,19 @@ class TaskExecutor:
             duration = (end_time - start_time).total_seconds()
             
             logger.info(f"任务完成: {task_identifier}, 耗时: {duration:.2f}秒")
+
+            if run_once_per_day and task_id:
+                try:
+                    from database.database import Database
+
+                    db = Database.Create()
+                    try:
+                        db.ensure_scheduled_task_run_daily_tables()
+                        db.mark_scheduled_task_ran_today(task_id)
+                    finally:
+                        db.close()
+                except Exception as e:
+                    logger.warning("写入每日已执行标记失败（忽略）task=%s err=%s", task_identifier, e)
             return result
             
         except ImportError as e:
@@ -237,13 +269,18 @@ class TaskManager:
             
             func = self.load_module_function(config.module_path, config.function_name)
 
-            # 关键点：使用字符串引用TaskExecutor.execute_function
-            # 并传递模块路径和函数名作为参数
             job_kwargs = {
-                'func': func,
-                #'args': (config.module_path, config.function_name, 
-                #        config.task_id, config.task_name,
-                #        config.args, config.kwargs),
+                # 使用 TaskExecutor 作为稳定入口，便于注入通用逻辑（如：每天只执行一次）
+                'func': TaskExecutor.execute_function,
+                'args': (
+                    config.module_path,
+                    config.function_name,
+                    config.task_id,
+                    config.task_name,
+                    config.args,
+                    config.kwargs,
+                    bool(getattr(config, "run_once_per_day", False)),
+                ),
                 'trigger': trigger,
                 'id': config.task_id,
                 'name': config.task_name,
@@ -347,15 +384,93 @@ class TaskManager:
                 if config.enabled:
                     if self.add_task(config):
                         loaded_count += 1
+                    else:
+                        self.tasks[config.task_id] = config
+                        self.logger.warning(
+                            f"启用任务注册失败，已保留配置待修复: {config.task_name}"
+                        )
                 else:
-                    self.logger.info(f"跳过禁用任务: {config.task_name}")
+                    self.tasks[config.task_id] = config
+                    self.logger.info(f"跳过禁用任务（已载入配置）: {config.task_name}")
             
-            self.logger.info(f"从配置文件加载了 {loaded_count} 个任务")
+            self.logger.info(f"从配置文件加载了 {loaded_count} 个已调度任务，共 {len(self.tasks)} 条配置")
             return True
             
         except Exception as e:
             self.logger.error(f"加载配置文件失败: {e}", exc_info=True)
             return False
+
+    def load_configs_from_database(self, db) -> bool:
+        """从数据库 scheduled_task 表加载任务并注册调度器（运行期权威来源）。"""
+        from Managers.scheduled_task_sync import row_to_task_dict
+
+        try:
+            # 本机开发：允许用本机 configs/tasks_config.yaml 的 enabled 覆盖 DB enabled
+            # 目的：多机器开发时，每台机器可本地启停，不污染线上/共享数据库数据。
+            enabled_overrides = self._load_enabled_overrides_from_yaml()
+
+            db.ensure_scheduled_task_tables()
+            rows = db.fetch_all_scheduled_tasks()
+            if not rows:
+                self.logger.info("数据库中无定时任务配置")
+                return True
+            loaded_count = 0
+            for row in rows:
+                d = row_to_task_dict(row)
+                tid = (d.get("task_id") or "").strip()
+                if tid and tid in enabled_overrides:
+                    d["enabled"] = enabled_overrides[tid]
+                config = TaskConfig.from_dict(d)
+                if config.enabled:
+                    if self.add_task(config):
+                        loaded_count += 1
+                    else:
+                        self.tasks[config.task_id] = config
+                        self.logger.warning(
+                            "启用任务注册失败，已保留配置待修复: %s", config.task_name
+                        )
+                else:
+                    self.tasks[config.task_id] = config
+                    self.logger.info("跳过禁用任务（已载入配置）: %s", config.task_name)
+            self.logger.info(
+                "从数据库加载了 %d 个已调度任务，共 %d 条配置",
+                loaded_count,
+                len(self.tasks),
+            )
+            return True
+        except Exception as e:
+            self.logger.error("从数据库加载任务失败: %s", e, exc_info=True)
+            return False
+
+    def _load_enabled_overrides_from_yaml(self) -> Dict[str, bool]:
+        """
+        从本机 YAML 配置中读取 enabled 覆盖表。
+
+        仅用于运行期内存覆盖，不会写回数据库。
+        """
+        try:
+            path = Path(self.config_file)
+            if not path.is_file():
+                return {}
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            tasks = data.get("tasks") or []
+            if not isinstance(tasks, list):
+                return {}
+            overrides: Dict[str, bool] = {}
+            for t in tasks:
+                if not isinstance(t, dict):
+                    continue
+                tid = (t.get("task_id") or "").strip()
+                if not tid:
+                    continue
+                if "enabled" not in t:
+                    continue
+                overrides[tid] = bool(t.get("enabled"))
+            return overrides
+        except Exception as e:
+            self.logger.debug("读取 YAML enabled 覆盖失败（忽略）: %s", e)
+            return {}
     
     def _create_default_config(self):
         """创建默认配置文件"""
@@ -379,6 +494,49 @@ class TaskManager:
                      default_flow_style=False, sort_keys=False)
         
         self.logger.info(f"已创建默认配置文件: {self.config_file}")
+    
+    def persist_task_to_database(self, db, cfg: TaskConfig) -> bool:
+        """将单条任务配置写入数据库表 scheduled_task。"""
+        from Managers.scheduled_task_sync import task_config_to_storage_dict
+
+        try:
+            db.ensure_scheduled_task_tables()
+            db.upsert_scheduled_task(task_config_to_storage_dict(cfg))
+            return True
+        except Exception as e:
+            self.logger.error("写入 scheduled_task 失败: %s", e, exc_info=True)
+            return False
+    
+    def upsert_task(self, config: TaskConfig) -> bool:
+        """
+        更新或新增任务配置并同步调度器：先移除已有 job，再按需注册。
+        启用任务若注册失败，尽量恢复变更前的配置与调度。
+        """
+        tid = config.task_id
+        try:
+            self.scheduler.remove_job(tid)
+        except Exception:
+            pass
+        old_cfg = self.tasks.get(tid)
+        if not config.enabled:
+            self.tasks[tid] = config
+            return True
+        self.tasks.pop(tid, None)
+        if not self.add_task(config):
+            self.logger.error("upsert_task 注册失败: %s", tid)
+            if old_cfg is not None:
+                self.tasks[tid] = old_cfg
+                if old_cfg.enabled and not self.add_task(old_cfg):
+                    self.logger.error("upsert_task 回滚旧配置失败: %s", tid)
+            return False
+        return True
+    
+    def delete_task_config(self, task_id: str, db) -> bool:
+        """从调度器、内存与数据库移除任务。"""
+        self.remove_task(task_id)
+        db.ensure_scheduled_task_tables()
+        db.delete_scheduled_task(task_id)
+        return True
     
     def start(self) -> None:
         """启动调度器"""
@@ -425,13 +583,11 @@ class TaskManager:
             return False
     
     def remove_task(self, task_id: str) -> bool:
-        """移除任务"""
+        """从调度器移除 job（若存在），并删除内存中的任务配置。"""
         try:
             self.scheduler.remove_job(task_id)
-            if task_id in self.tasks:
-                del self.tasks[task_id]
-            self.logger.info(f"任务已移除: {task_id}")
-            return True
         except Exception as e:
-            self.logger.error(f"移除任务失败: {task_id}, 错误: {e}")
-            return False
+            self.logger.debug("remove_job(%s): %s", task_id, e)
+        self.tasks.pop(task_id, None)
+        self.logger.info(f"任务已移除: {task_id}")
+        return True

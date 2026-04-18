@@ -22,7 +22,8 @@ def CheckSingle(stock_code, list_manager, signal_class = Signal_BOLL3, days=200)
    
     
     # 获取股票数据
-    df = list_manager.get_stock_data(stock_code, days)
+    # 信号计算统一使用：DB 未复权日线 + adj_factor 转换后的前复权口径
+    df = list_manager.get_stock_data_qfq(stock_code, days, missing_adj_factor_policy="skip")
     
     if df is None or df.empty:
         print(f"无法获取股票 {stock_code} 的数据")
