@@ -9,6 +9,11 @@
     一个敏锐的市场事件爬虫系统，来时刻监控市场上的一些消息。
     每日固定时间对当日的行情生成一份盘前和盘后报告。
 
+安装：
+1、安装Python 3.12
+2、执行pip -install -r requirements.txt
+3、执行run.bat
+
 ![图片描述](./images/main.jpg)
 
 如果有想法欢迎一起探讨
