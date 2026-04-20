@@ -278,7 +278,10 @@ class Database:
             self._init_database_mysql()
         self.ensure_etf_basic_tables()
         self.ensure_adj_factor_tables()
+        self.ensure_nga_auto_summary_task_tables()
         self.migrate_positions_transactions_portfolio_user_id()
+        self.migrate_investment_calendar_item_remind_columns()
+        self.ensure_investment_calendar_reminder_log_tables()
 
     # ─────────────────────────── 场内 ETF 基础信息（MySQL/SQLite 双引擎一致） ────────────────────────────
 
@@ -469,6 +472,7 @@ class Database:
             last_login TIMESTAMP,
             settings TEXT
         )''')
+        self.ensure_investment_calendar_tables()
         # 仓位相关表（按 user_id 隔离，仅当前登录用户可见）
         self.execute('''CREATE TABLE IF NOT EXISTS positions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -634,6 +638,7 @@ class Database:
             last_login TIMESTAMP NULL,
             settings TEXT
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+        self.ensure_investment_calendar_tables()
         # 仓位相关表（按 user_id 隔离）
         self.execute('''CREATE TABLE IF NOT EXISTS positions (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -1295,6 +1300,124 @@ class Database:
         except Exception as e:
             logger.warning("message_group 补列 app_secret 失败（已忽略）: %s", e)
 
+    def _create_nga_auto_summary_task_tables_sqlite(self):
+        self.execute(
+            '''CREATE TABLE IF NOT EXISTS nga_auto_summary_task (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tid INTEGER NOT NULL,
+            author_id INTEGER NOT NULL,
+            message_group_id VARCHAR(32) NOT NULL,
+            run_time VARCHAR(5) NOT NULL,
+            extra_prompt TEXT DEFAULT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            last_run_at TIMESTAMP NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tid, author_id, run_time)
+        )'''
+        )
+        try:
+            self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_nga_auto_summary_task_tid ON nga_auto_summary_task (tid)"
+            )
+        except Exception:
+            pass
+
+    def _create_nga_auto_summary_task_tables_mysql(self):
+        self.execute(
+            '''CREATE TABLE IF NOT EXISTS nga_auto_summary_task (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            tid INT NOT NULL,
+            author_id INT NOT NULL,
+            message_group_id VARCHAR(32) NOT NULL,
+            run_time VARCHAR(5) NOT NULL,
+            extra_prompt TEXT NULL,
+            enabled TINYINT NOT NULL DEFAULT 1,
+            last_run_at DATETIME NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_nga_auto_sum_tid_author_time (tid, author_id, run_time),
+            KEY idx_nga_auto_summary_task_tid (tid)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'''
+        )
+
+    def ensure_nga_auto_summary_task_tables(self):
+        """NGA 关注作者时段总结：每日定时自动任务（MySQL / SQLite 一致）。"""
+        if self.is_sqlite:
+            self._create_nga_auto_summary_task_tables_sqlite()
+        else:
+            self._create_nga_auto_summary_task_tables_mysql()
+
+    def list_nga_auto_summary_tasks_by_tid(self, tid: int) -> list:
+        self.ensure_nga_auto_summary_task_tables()
+        return (
+            self.fetch_all(
+                "SELECT id, tid, author_id, message_group_id, run_time, extra_prompt, enabled, "
+                "last_run_at, created_at FROM nga_auto_summary_task WHERE tid = %s ORDER BY run_time, id",
+                (int(tid),),
+            )
+            or []
+        )
+
+    def list_nga_auto_summary_tasks_enabled(self) -> list:
+        self.ensure_nga_auto_summary_task_tables()
+        return (
+            self.fetch_all(
+                "SELECT id, tid, author_id, message_group_id, run_time, extra_prompt, enabled, "
+                "last_run_at, created_at FROM nga_auto_summary_task WHERE enabled = 1 ORDER BY tid, id"
+            )
+            or []
+        )
+
+    def insert_nga_auto_summary_task(
+        self,
+        tid: int,
+        author_id: int,
+        message_group_id: str,
+        run_time: str,
+        extra_prompt: str | None = None,
+        enabled: int = 1,
+    ) -> tuple[bool, str | int]:
+        """插入一条自动任务，成功返回 (True, id)，失败 (False, error_msg)。"""
+        self.ensure_nga_auto_summary_task_tables()
+        try:
+            ep = (extra_prompt or "").strip() or None
+            self.execute(
+                "INSERT INTO nga_auto_summary_task "
+                "(tid, author_id, message_group_id, run_time, extra_prompt, enabled) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (int(tid), int(author_id), str(message_group_id), str(run_time), ep, int(enabled or 0)),
+            )
+            if self.is_sqlite:
+                row = self.fetch_one("SELECT last_insert_rowid() AS id")
+            else:
+                row = self.fetch_one("SELECT LAST_INSERT_ID() AS id")
+            return (True, int(row["id"]))
+        except Exception as e:
+            err = str(e)
+            if "UNIQUE" in err.upper() or "unique" in err:
+                return (False, "该作者在相同每日执行时间下已有自动任务")
+            logger.error("insert_nga_auto_summary_task 失败: %s", e, exc_info=True)
+            return (False, err)
+
+    def get_nga_auto_summary_task_by_id(self, task_id: int) -> dict | None:
+        self.ensure_nga_auto_summary_task_tables()
+        return self.fetch_one(
+            "SELECT id, tid, author_id, message_group_id, run_time, extra_prompt, enabled, "
+            "last_run_at, created_at FROM nga_auto_summary_task WHERE id = %s LIMIT 1",
+            (int(task_id),),
+        )
+
+    def delete_nga_auto_summary_task(self, task_id: int) -> bool:
+        self.ensure_nga_auto_summary_task_tables()
+        self.execute("DELETE FROM nga_auto_summary_task WHERE id = %s", (int(task_id),))
+        return True
+
+    def update_nga_auto_summary_task_last_run(self, task_id: int, when) -> None:
+        self.ensure_nga_auto_summary_task_tables()
+        self.execute(
+            "UPDATE nga_auto_summary_task SET last_run_at = %s WHERE id = %s",
+            (when, int(task_id)),
+        )
+
     def ensure_signal_rule_tables(self):
         """确保 signal_rule 表存在（不依赖 init_database）"""
         if self.is_sqlite:
@@ -1541,6 +1664,321 @@ class Database:
                 )
                 return int(getattr(cursor2, 'rowcount', 0) or 0)
         return 0
+
+    # ─────────────────────────── 投资日历（MySQL/SQLite 双引擎一致） ────────────────────────────
+
+    def _create_investment_calendar_tables_sqlite(self):
+        self.execute('''CREATE TABLE IF NOT EXISTS investment_calendar_item (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            date DATE NOT NULL,
+            content TEXT NOT NULL,
+            reminder_group TEXT,
+            reminder_message TEXT,
+            remind_anchor_time TEXT NOT NULL DEFAULT '09:00',
+            remind_advance_minutes INTEGER NOT NULL DEFAULT 0,
+            remind_count_per_day INTEGER NOT NULL DEFAULT 1,
+            remind_interval_minutes INTEGER NOT NULL DEFAULT 60,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )''')
+        try:
+            self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_inv_cal_item_user_date "
+                "ON investment_calendar_item (user_id, date)"
+            )
+        except Exception:
+            pass
+        try:
+            self.execute(
+                '''CREATE TRIGGER IF NOT EXISTS trg_inv_cal_item_updated_at
+                   AFTER UPDATE ON investment_calendar_item
+                   FOR EACH ROW
+                   WHEN NEW.updated_at = OLD.updated_at
+                   BEGIN
+                       UPDATE investment_calendar_item
+                       SET updated_at = CURRENT_TIMESTAMP
+                       WHERE id = NEW.id;
+                   END'''
+            )
+        except Exception:
+            pass
+
+    def _create_investment_calendar_tables_mysql(self):
+        self.execute('''CREATE TABLE IF NOT EXISTS investment_calendar_item (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            date DATE NOT NULL,
+            content TEXT NOT NULL,
+            reminder_group VARCHAR(128) DEFAULT NULL,
+            reminder_message TEXT DEFAULT NULL,
+            remind_anchor_time VARCHAR(5) NOT NULL DEFAULT '09:00',
+            remind_advance_minutes INT NOT NULL DEFAULT 0,
+            remind_count_per_day INT NOT NULL DEFAULT 1,
+            remind_interval_minutes INT NOT NULL DEFAULT 60,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            KEY idx_inv_cal_item_user_date (user_id, date),
+            CONSTRAINT fk_inv_cal_item_user
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+
+    def migrate_investment_calendar_item_remind_columns(self):
+        """为已有 investment_calendar_item 表补充提醒时间相关列（MySQL / SQLite 语义一致）。"""
+        t = 'investment_calendar_item'
+        try:
+            self.ensure_investment_calendar_tables()
+        except Exception:
+            return
+        if not self.table_exists(t):
+            return
+        if self.is_sqlite:
+            pairs = [
+                ('remind_anchor_time', "ALTER TABLE investment_calendar_item ADD COLUMN remind_anchor_time TEXT NOT NULL DEFAULT '09:00'"),
+                ('remind_advance_minutes', 'ALTER TABLE investment_calendar_item ADD COLUMN remind_advance_minutes INTEGER NOT NULL DEFAULT 0'),
+                ('remind_count_per_day', 'ALTER TABLE investment_calendar_item ADD COLUMN remind_count_per_day INTEGER NOT NULL DEFAULT 1'),
+                ('remind_interval_minutes', 'ALTER TABLE investment_calendar_item ADD COLUMN remind_interval_minutes INTEGER NOT NULL DEFAULT 60'),
+            ]
+        else:
+            pairs = [
+                ("remind_anchor_time", "ALTER TABLE investment_calendar_item ADD COLUMN remind_anchor_time VARCHAR(5) NOT NULL DEFAULT '09:00'"),
+                ('remind_advance_minutes', 'ALTER TABLE investment_calendar_item ADD COLUMN remind_advance_minutes INT NOT NULL DEFAULT 0'),
+                ('remind_count_per_day', 'ALTER TABLE investment_calendar_item ADD COLUMN remind_count_per_day INT NOT NULL DEFAULT 1'),
+                ('remind_interval_minutes', 'ALTER TABLE investment_calendar_item ADD COLUMN remind_interval_minutes INT NOT NULL DEFAULT 60'),
+            ]
+        for col, ddl in pairs:
+            try:
+                if self.column_exists(t, col):
+                    continue
+                self.execute(ddl)
+            except Exception as e:
+                logger.warning('迁移 investment_calendar_item 列 %s 失败: %s', col, e)
+
+    def ensure_investment_calendar_tables(self):
+        if self.is_sqlite:
+            self._create_investment_calendar_tables_sqlite()
+        else:
+            self._create_investment_calendar_tables_mysql()
+
+    def _create_investment_calendar_reminder_log_tables_sqlite(self):
+        self.execute('''CREATE TABLE IF NOT EXISTS investment_calendar_reminder_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            item_id INTEGER NOT NULL,
+            remind_at TEXT NOT NULL,
+            sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, item_id, remind_at),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (item_id) REFERENCES investment_calendar_item(id) ON DELETE CASCADE
+        )''')
+        try:
+            self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_inv_cal_rem_log_user_remind_at "
+                "ON investment_calendar_reminder_log (user_id, remind_at)"
+            )
+        except Exception:
+            pass
+
+    def _create_investment_calendar_reminder_log_tables_mysql(self):
+        self.execute('''CREATE TABLE IF NOT EXISTS investment_calendar_reminder_log (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            item_id INT NOT NULL,
+            remind_at DATETIME NOT NULL,
+            sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_inv_cal_rem_log (user_id, item_id, remind_at),
+            KEY idx_inv_cal_rem_log_user_remind_at (user_id, remind_at),
+            CONSTRAINT fk_inv_cal_rem_log_user
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            CONSTRAINT fk_inv_cal_rem_log_item
+                FOREIGN KEY (item_id) REFERENCES investment_calendar_item(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4''')
+
+    def ensure_investment_calendar_reminder_log_tables(self):
+        """确保投资日历提醒发送日志表存在（用于去重/幂等）。"""
+        self.ensure_investment_calendar_tables()
+        if self.is_sqlite:
+            self._create_investment_calendar_reminder_log_tables_sqlite()
+        else:
+            self._create_investment_calendar_reminder_log_tables_mysql()
+
+    def mark_investment_calendar_reminded(self, user_id: int, item_id: int, remind_at: str) -> bool:
+        """记录一次提醒（幂等）。remind_at: 'YYYY-MM-DD HH:MM:SS'。"""
+        self.ensure_investment_calendar_reminder_log_tables()
+        uid = int(user_id)
+        iid = int(item_id)
+        if self.is_sqlite:
+            sql = (
+                "INSERT OR IGNORE INTO investment_calendar_reminder_log (user_id, item_id, remind_at) "
+                "VALUES (%s, %s, %s)"
+            )
+        else:
+            sql = (
+                "INSERT IGNORE INTO investment_calendar_reminder_log (user_id, item_id, remind_at) "
+                "VALUES (%s, %s, %s)"
+            )
+        self.execute(sql, (uid, iid, remind_at))
+        return True
+
+    def has_investment_calendar_reminded(self, user_id: int, item_id: int, remind_at: str) -> bool:
+        """判断某次提醒是否已经发送记录过。"""
+        self.ensure_investment_calendar_reminder_log_tables()
+        row = self.fetch_one(
+            "SELECT 1 AS x FROM investment_calendar_reminder_log WHERE user_id=%s AND item_id=%s AND remind_at=%s LIMIT 1",
+            (int(user_id), int(item_id), remind_at),
+        )
+        return row is not None
+
+    def list_investment_calendar_items(self, user_id: int, start_date: str, end_date: str):
+        """按日期范围返回用户日历项，按 date ASC, id ASC 稳定排序。"""
+        self.ensure_investment_calendar_tables()
+        uid = int(user_id)
+        rows = self.fetch_all(
+            '''SELECT id, user_id, date, content, reminder_group, reminder_message,
+                      remind_anchor_time, remind_advance_minutes, remind_count_per_day, remind_interval_minutes,
+                      created_at, updated_at
+               FROM investment_calendar_item
+               WHERE user_id = %s AND date >= %s AND date <= %s
+               ORDER BY date ASC, id ASC''',
+            (uid, start_date, end_date),
+        )
+        out = []
+        for r in rows or []:
+            out.append(
+                {
+                    "id": int(r.get("id")),
+                    "user_id": int(r.get("user_id")),
+                    "date": str(r.get("date")),
+                    "content": r.get("content") or "",
+                    "reminder_group": r.get("reminder_group") or "",
+                    "reminder_message": r.get("reminder_message") or "",
+                    "remind_anchor_time": (r.get("remind_anchor_time") or "09:00")[:5],
+                    "remind_advance_minutes": int(r.get("remind_advance_minutes") or 0),
+                    "remind_count_per_day": int(r.get("remind_count_per_day") or 1),
+                    "remind_interval_minutes": int(r.get("remind_interval_minutes") or 60),
+                    "created_at": r.get("created_at"),
+                    "updated_at": r.get("updated_at"),
+                }
+            )
+        return out
+
+    def get_investment_calendar_item(self, user_id: int, item_id: int):
+        """读取单条日历项（带 user_id 隔离），不存在返回 None。"""
+        self.ensure_investment_calendar_tables()
+        uid = int(user_id)
+        row = self.fetch_one(
+            '''SELECT id, user_id, date, content, reminder_group, reminder_message,
+                      remind_anchor_time, remind_advance_minutes, remind_count_per_day, remind_interval_minutes,
+                      created_at, updated_at
+               FROM investment_calendar_item
+               WHERE id = %s AND user_id = %s
+               LIMIT 1''',
+            (int(item_id), uid),
+        )
+        if not row:
+            return None
+        return {
+            "id": int(row.get("id")),
+            "user_id": int(row.get("user_id")),
+            "date": str(row.get("date")),
+            "content": row.get("content") or "",
+            "reminder_group": row.get("reminder_group") or "",
+            "reminder_message": row.get("reminder_message") or "",
+            "remind_anchor_time": (row.get("remind_anchor_time") or "09:00")[:5],
+            "remind_advance_minutes": int(row.get("remind_advance_minutes") or 0),
+            "remind_count_per_day": int(row.get("remind_count_per_day") or 1),
+            "remind_interval_minutes": int(row.get("remind_interval_minutes") or 60),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        }
+
+    def create_investment_calendar_item(
+        self,
+        *,
+        user_id: int,
+        date: str,
+        content: str,
+        reminder_group: str | None = None,
+        reminder_message: str | None = None,
+        remind_anchor_time: str = "09:00",
+        remind_advance_minutes: int = 0,
+        remind_count_per_day: int = 1,
+        remind_interval_minutes: int = 60,
+    ):
+        """创建日历项并返回实体 dict。"""
+        self.ensure_investment_calendar_tables()
+        uid = int(user_id)
+        self.execute(
+            '''INSERT INTO investment_calendar_item (
+                   user_id, date, content, reminder_group, reminder_message,
+                   remind_anchor_time, remind_advance_minutes, remind_count_per_day, remind_interval_minutes
+               )
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+            (
+                uid,
+                date,
+                content,
+                reminder_group,
+                reminder_message,
+                remind_anchor_time,
+                int(remind_advance_minutes),
+                int(remind_count_per_day),
+                int(remind_interval_minutes),
+            ),
+        )
+        if self.is_sqlite:
+            row = self.fetch_one('SELECT last_insert_rowid() AS id')
+        else:
+            row = self.fetch_one('SELECT LAST_INSERT_ID() AS id')
+        new_id = int(row["id"])
+        return self.get_investment_calendar_item(uid, new_id)
+
+    def update_investment_calendar_item(
+        self,
+        *,
+        user_id: int,
+        item_id: int,
+        content: str,
+        reminder_group: str | None,
+        reminder_message: str | None,
+        remind_anchor_time: str,
+        remind_advance_minutes: int,
+        remind_count_per_day: int,
+        remind_interval_minutes: int,
+    ) -> bool:
+        """更新日历项业务字段，返回是否更新成功（找不到或越权返回 False）。"""
+        self.ensure_investment_calendar_tables()
+        uid = int(user_id)
+        cursor = self.execute(
+            '''UPDATE investment_calendar_item
+               SET content=%s, reminder_group=%s, reminder_message=%s,
+                   remind_anchor_time=%s, remind_advance_minutes=%s,
+                   remind_count_per_day=%s, remind_interval_minutes=%s
+               WHERE id=%s AND user_id=%s''',
+            (
+                content,
+                reminder_group,
+                reminder_message,
+                remind_anchor_time,
+                int(remind_advance_minutes),
+                int(remind_count_per_day),
+                int(remind_interval_minutes),
+                int(item_id),
+                uid,
+            ),
+        )
+        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+
+    def delete_investment_calendar_item(self, user_id: int, item_id: int) -> int:
+        """删除日历项，返回删除行数。"""
+        self.ensure_investment_calendar_tables()
+        uid = int(user_id)
+        cursor = self.execute(
+            'DELETE FROM investment_calendar_item WHERE id = %s AND user_id = %s',
+            (int(item_id), uid),
+        )
+        return int(getattr(cursor, "rowcount", 0) or 0)
 
     def create_signal_rule(self, stock_code, stock_name, group_ids_json, signal_type,
                            params_json, message_template, send_type='on_trigger',

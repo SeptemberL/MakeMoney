@@ -36,7 +36,7 @@ except Exception as e:
 
 import threading
 import schedule
-import time
+import time as time_module
 from stocks.stock_global import stockGlobal
 from flask_socketio import SocketIO, emit
 
@@ -99,7 +99,13 @@ def run_schedule():
         #schedule.every().day.at("15:10").do(bp.update_all_stocks_api)
         while True:
             schedule.run_pending()
-            time.sleep(60)
+            try:
+                from nga_spider.nga_auto_summary_scheduler import run_due_nga_auto_summary_tasks_safe
+
+                run_due_nga_auto_summary_tasks_safe()
+            except Exception as e:
+                logger.error("NGA 自动时段总结调度: %s", e, exc_info=True)
+            time_module.sleep(30)
 
 if __name__ == '__main__':
     # 确保项目初始化
@@ -197,6 +203,32 @@ if __name__ == '__main__':
                 db_tm3.close()
     except Exception as e:
         logger.error("初始化 signal_state_flush 任务失败: %s", e, exc_info=True)
+
+    # ─────────────────────────── 内置任务：投资日历提醒扫描（interval） ────────────────────────────
+    # 说明：当前为“扫描并发送文本提醒”；提醒时间选项保存在 investment_calendar_item 中。
+    try:
+        sec = 30
+        cfg = TaskConfig(
+            task_id="task_investment_calendar_reminder_tick",
+            task_name="投资日历提醒扫描（interval）",
+            module_path="tasks.investment_calendar_reminder",
+            function_name="run_investment_calendar_reminder_job",
+            trigger_type=TriggerType.INTERVAL,
+            trigger_args={"seconds": sec},
+            enabled=True,
+            max_instances=1,
+            misfire_grace_time=30,
+            coalesce=True,
+            description="每30秒扫描 investment_calendar_item 的应提醒时间点并通过 notify_channel 发送；发送记录落库去重。",
+        )
+        db_tm4 = Database.Create()
+        try:
+            taskManager.persist_task_to_database(db_tm4, cfg)
+            taskManager.load_configs_from_database(db_tm4)
+        finally:
+            db_tm4.close()
+    except Exception as e:
+        logger.error("初始化 investment calendar reminder tick 任务失败: %s", e, exc_info=True)
 
     # 启动后先跑一次（force=true）：让新建/刚启用的规则立刻生效（非交易时间也可用于验证）
     try:

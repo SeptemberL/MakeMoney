@@ -16,11 +16,11 @@ import logging
 import json
 import pandas as pd
 import numpy as np
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 import os
 import subprocess
 import schedule
-import time
+import time as time_module
 import threading
 import platform
 if platform.system() == 'Windows':
@@ -1443,6 +1443,14 @@ def watchlist_page():
     return render_template('watchlist.html', watchlist=[])
 
 
+@bp.route('/investment_calendar')
+def investment_calendar_page():
+    """投资日历页面（需登录，仅展示当前账号数据）。"""
+    if 'user_id' not in session:
+        return redirect(url_for('main.index'))
+    return render_template('investment_calendar.html')
+
+
 @bp.route('/api/watchlist', methods=['GET'])
 def api_watchlist_get():
     """已登录用户从数据库读取自选列表（跨设备同步）。"""
@@ -1508,6 +1516,206 @@ def api_watchlist_delete(stock_code):
     except Exception as e:
         logger.error('删除自选项失败: %s', e, exc_info=True)
         return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+    finally:
+        db.close()
+
+
+def _require_login_json():
+    if "user_id" not in session:
+        return jsonify({"success": False, "message": "未登录", "require_login": True}), 401
+    return None
+
+
+def _parse_investment_calendar_remind_fields(payload: dict):
+    """解析并校验投资日历提醒时间选项；返回 (anchor, advance, count, interval)。"""
+    anchor = str((payload or {}).get("remind_anchor_time") or "09:00").strip()
+    if len(anchor) >= 8 and anchor[2] == ":":
+        # 兼容 <input type="time"> 可能返回 HH:MM:SS
+        anchor = anchor[:5]
+    try:
+        datetime.strptime(anchor, "%H:%M")
+    except ValueError as e:
+        raise ValueError("提醒基准时间格式无效，请使用 HH:MM（24 小时制）") from e
+
+    raw_adv = (payload or {}).get("remind_advance_minutes", 0)
+    try:
+        advance = int(raw_adv)
+    except (TypeError, ValueError) as e:
+        raise ValueError("remind_advance_minutes 必须为整数") from e
+    if advance < 0 or advance > 4320:
+        raise ValueError("提前提醒分钟数必须在 0～4320 之间")
+
+    raw_cnt = (payload or {}).get("remind_count_per_day", 1)
+    try:
+        count = int(raw_cnt)
+    except (TypeError, ValueError) as e:
+        raise ValueError("remind_count_per_day 必须为整数") from e
+    if count < 1 or count > 24:
+        raise ValueError("每日提醒次数必须在 1～24 之间")
+
+    raw_iv = (payload or {}).get("remind_interval_minutes", 60)
+    try:
+        interval = int(raw_iv)
+    except (TypeError, ValueError) as e:
+        raise ValueError("remind_interval_minutes 必须为整数") from e
+    if interval < 5 or interval > 1440:
+        raise ValueError("提醒间隔分钟数必须在 5～1440 之间")
+
+    return anchor, advance, count, interval
+
+
+@bp.route("/api/investment_calendar/items", methods=["GET"])
+def api_investment_calendar_items_get():
+    """按日期范围查询当前账号的投资日历项。"""
+    not_logged_in = _require_login_json()
+    if not_logged_in:
+        return not_logged_in
+
+    start_raw = (request.args.get("start_date") or "").strip()
+    end_raw = (request.args.get("end_date") or "").strip()
+    d0 = _parse_quant_iso_date(start_raw)
+    d1 = _parse_quant_iso_date(end_raw)
+    if d0 is None or d1 is None:
+        return jsonify({"success": False, "message": "起止日期格式无效，请使用 YYYY-MM-DD"}), 400
+    if d0 > d1:
+        return jsonify({"success": False, "message": "开始日期不能晚于结束日期"}), 400
+
+    db = Database.Create()
+    try:
+        items = db.list_investment_calendar_items(
+            int(session["user_id"]),
+            d0.isoformat(),
+            d1.isoformat(),
+        )
+        return jsonify({"success": True, "items": items})
+    except Exception as e:
+        logger.error("查询投资日历项失败: %s", e, exc_info=True)
+        return jsonify({"success": False, "message": "服务器内部错误"}), 500
+    finally:
+        db.close()
+
+
+@bp.route("/api/investment_calendar/items", methods=["POST"])
+def api_investment_calendar_items_post():
+    """创建投资日历项（绑定当前账号）。"""
+    not_logged_in = _require_login_json()
+    if not_logged_in:
+        return not_logged_in
+
+    payload = request.get_json(silent=True) or {}
+    d = _parse_quant_iso_date(payload.get("date"))
+    if d is None:
+        return jsonify({"success": False, "message": "日期格式无效，请使用 YYYY-MM-DD"}), 400
+
+    content = str(payload.get("content") or "").strip()
+    if not content:
+        return jsonify({"success": False, "message": "内容不能为空"}), 400
+
+    reminder_group = str(payload.get("reminder_group") or "").strip()
+    reminder_message = str(payload.get("reminder_message") or "").strip()
+
+    if len(reminder_group) > 128:
+        return jsonify({"success": False, "message": "reminder_group 过长（最多 128）"}), 400
+    if len(content) > 4000:
+        return jsonify({"success": False, "message": "content 过长（最多 4000）"}), 400
+    if len(reminder_message) > 4000:
+        return jsonify({"success": False, "message": "reminder_message 过长（最多 4000）"}), 400
+
+    try:
+        anchor, advance, count, interval = _parse_investment_calendar_remind_fields(payload)
+    except ValueError as ve:
+        return jsonify({"success": False, "message": str(ve)}), 400
+
+    db = Database.Create()
+    try:
+        item = db.create_investment_calendar_item(
+            user_id=int(session["user_id"]),
+            date=d.isoformat(),
+            content=content,
+            reminder_group=reminder_group or None,
+            reminder_message=reminder_message or None,
+            remind_anchor_time=anchor,
+            remind_advance_minutes=advance,
+            remind_count_per_day=count,
+            remind_interval_minutes=interval,
+        )
+        return jsonify({"success": True, "item": item})
+    except Exception as e:
+        logger.error("创建投资日历项失败: %s", e, exc_info=True)
+        return jsonify({"success": False, "message": "服务器内部错误"}), 500
+    finally:
+        db.close()
+
+
+@bp.route("/api/investment_calendar/items/<int:item_id>", methods=["PUT"])
+def api_investment_calendar_items_put(item_id: int):
+    """更新投资日历项（仅业务字段，按账号隔离）。"""
+    not_logged_in = _require_login_json()
+    if not_logged_in:
+        return not_logged_in
+
+    payload = request.get_json(silent=True) or {}
+    # date 不允许在此接口隐式变更
+    if "date" in payload:
+        return jsonify({"success": False, "message": "不支持在更新接口修改 date"}), 400
+
+    content = str(payload.get("content") or "").strip()
+    if not content:
+        return jsonify({"success": False, "message": "内容不能为空"}), 400
+    reminder_group = str(payload.get("reminder_group") or "").strip()
+    reminder_message = str(payload.get("reminder_message") or "").strip()
+    if len(reminder_group) > 128:
+        return jsonify({"success": False, "message": "reminder_group 过长（最多 128）"}), 400
+    if len(content) > 4000:
+        return jsonify({"success": False, "message": "content 过长（最多 4000）"}), 400
+    if len(reminder_message) > 4000:
+        return jsonify({"success": False, "message": "reminder_message 过长（最多 4000）"}), 400
+
+    try:
+        anchor, advance, count, interval = _parse_investment_calendar_remind_fields(payload)
+    except ValueError as ve:
+        return jsonify({"success": False, "message": str(ve)}), 400
+
+    db = Database.Create()
+    try:
+        ok = db.update_investment_calendar_item(
+            user_id=int(session["user_id"]),
+            item_id=int(item_id),
+            content=content,
+            reminder_group=reminder_group or None,
+            reminder_message=reminder_message or None,
+            remind_anchor_time=anchor,
+            remind_advance_minutes=advance,
+            remind_count_per_day=count,
+            remind_interval_minutes=interval,
+        )
+        if not ok:
+            return jsonify({"success": False, "message": "日历项不存在"}), 404
+        item = db.get_investment_calendar_item(int(session["user_id"]), int(item_id))
+        return jsonify({"success": True, "item": item})
+    except Exception as e:
+        logger.error("更新投资日历项失败: %s", e, exc_info=True)
+        return jsonify({"success": False, "message": "服务器内部错误"}), 500
+    finally:
+        db.close()
+
+
+@bp.route("/api/investment_calendar/items/<int:item_id>", methods=["DELETE"])
+def api_investment_calendar_items_delete(item_id: int):
+    """删除投资日历项（按账号隔离）。"""
+    not_logged_in = _require_login_json()
+    if not_logged_in:
+        return not_logged_in
+
+    db = Database.Create()
+    try:
+        n = db.delete_investment_calendar_item(int(session["user_id"]), int(item_id))
+        if n <= 0:
+            return jsonify({"success": False, "message": "日历项不存在"}), 404
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error("删除投资日历项失败: %s", e, exc_info=True)
+        return jsonify({"success": False, "message": "服务器内部错误"}), 500
     finally:
         db.close()
 
@@ -2560,7 +2768,7 @@ def fetch_today_stocks_api():
             except Exception as fetch_err:
                 logger.warning(f"拉取实时行情第 {attempt+1} 次失败: {fetch_err}")
                 if attempt < 2:
-                    time.sleep(2)
+                    time_module.sleep(2)
         if spot_df is None or spot_df.empty:
             return jsonify({'success': False, 'message': '拉取实时行情失败，请稍后重试'}), 500
         spot_df['代码'] = spot_df['代码'].astype(str)
@@ -3125,6 +3333,48 @@ def get_nga_floors(tid: int):
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@bp.route('/api/nga_floors/<int:tid>/saved_prompts', methods=['GET', 'PUT'])
+def nga_floors_saved_prompts(tid: int):
+    """
+    读取或更新当前帖子在数据库中的「AI 解释 / 时段总结」前置提示词（按 tid 存 nga_thread_config）。
+    PUT 请求体可含 ai_explain_prompt、author_summary_prompt 之一或两者；未出现的字段不修改；空字符串表示清空。
+    """
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        if request.method == 'GET':
+            thread = nga_db.get_thread_config(tid)
+            if not thread:
+                return jsonify({'success': False, 'message': '帖子配置不存在'}), 404
+            return jsonify({
+                'success': True,
+                'ai_explain_prompt': thread.get('ai_explain_prompt') or '',
+                'author_summary_prompt': thread.get('author_summary_prompt') or '',
+            })
+        payload = request.get_json(silent=True) or {}
+        if 'ai_explain_prompt' not in payload and 'author_summary_prompt' not in payload:
+            return jsonify({
+                'success': False,
+                'message': '请求体须包含 ai_explain_prompt 或 author_summary_prompt',
+            }), 400
+        if not nga_db.get_thread_config(tid):
+            return jsonify({'success': False, 'message': '帖子配置不存在'}), 404
+        kwargs = {}
+        if 'ai_explain_prompt' in payload:
+            v = payload.get('ai_explain_prompt')
+            kwargs['ai_explain_prompt'] = '' if v is None else str(v)
+        if 'author_summary_prompt' in payload:
+            v = payload.get('author_summary_prompt')
+            kwargs['author_summary_prompt'] = '' if v is None else str(v)
+        ok = nga_db.update_nga_thread_saved_prompts(tid, **kwargs)
+        if not ok:
+            return jsonify({'success': False, 'message': '更新失败或帖子不存在'}), 400
+        return jsonify({'success': True, 'message': '已保存到帖子配置'})
+    except Exception as e:
+        logger.error(f"saved_prompts tid={tid}: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 def _parse_nga_post_datetime(post_date_str: str) -> datetime | None:
     """
     NGA 楼层的 post_date 字段在库中是字符串，格式可能不稳定。
@@ -3146,6 +3396,343 @@ def _parse_nga_post_datetime(post_date_str: str) -> datetime | None:
         return datetime.fromisoformat(s.replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def _parse_request_datetime(value) -> datetime | None:
+    """解析前端 datetime-local 或常见日期时间字符串。"""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if s.endswith('Z'):
+        s = s[:-1]
+    if 'T' in s.upper():
+        try:
+            return datetime.fromisoformat(s.replace(' ', 'T'))
+        except ValueError:
+            pass
+    return _parse_nga_post_datetime(s)
+
+
+def _effective_dt_for_range_filter(post_date_str: str) -> datetime | None:
+    """
+    将楼层 post_date 转为用于时间区间筛选的时刻。
+    若仅有日期无时间，按当日 12:00 参与比较，避免被任意整点时段边界整批排除。
+    """
+    raw = str(post_date_str or '').strip()
+    dt = _parse_nga_post_datetime(raw)
+    if dt is None:
+        return None
+    if len(raw) <= 10 and ' ' not in raw and 'T' not in raw.upper():
+        return datetime.combine(dt.date(), time(12, 0))
+    return dt
+
+
+def _nga_collect_author_floors_in_range(
+    tid: int, author_id: int, range_start: datetime, range_end: datetime
+) -> list[tuple[datetime, dict]]:
+    """从已抓取楼层中筛出某作者在 [range_start, range_end) 内的回复，按时间与楼层号排序。"""
+    if nga_db is None or range_end <= range_start:
+        return []
+    floors = nga_db.get_floors_by_tid_author(tid=tid, author_id=author_id, limit=5000, offset=0)
+    out: list[tuple[datetime, dict]] = []
+    for f in floors:
+        eff = _effective_dt_for_range_filter(f.get('post_date') or '')
+        if eff is None:
+            continue
+        if range_start <= eff < range_end:
+            out.append((eff, f))
+    out.sort(key=lambda x: (x[0], int(x[1].get('floor_num') or 0)))
+    return out
+
+
+def _build_author_daily_transcript(entries: list[tuple[datetime, dict]], *, max_chars: int = 95000) -> str:
+    """将多条回复拼成供模型阅读的文本；单条引用过长时截断。"""
+    parts: list[str] = []
+    for dt, f in entries:
+        disp = (f.get('post_date') or '').strip() or dt.strftime('%Y-%m-%d %H:%M:%S')
+        block = f"--- 楼层 #{f['floor_num']} pid={f['pid']}  {disp} ---\n"
+        qt = (f.get('quote_text') or '').strip()
+        if qt:
+            if len(qt) > 2000:
+                qt = qt[:2000] + '…（引用已截断）'
+            block += '【引用】\n' + qt + '\n'
+        ct = (f.get('content_text') or '').strip()
+        block += '【正文】\n' + (ct or '（无）') + '\n\n'
+        parts.append(block)
+    full = ''.join(parts)
+    if len(full) > max_chars:
+        full = full[:max_chars] + '\n\n（时段内材料过长已截断；总结时请说明可能不完整）'
+    return full
+
+
+def _build_author_daily_summary_prompt(
+    *,
+    thread_name: str,
+    tid: int,
+    range_start: datetime,
+    range_end: datetime,
+    author_id: int,
+    author_name: str,
+    reply_count: int,
+    transcript: str,
+    user_prefix: str | None = None,
+) -> str:
+    """关注作者在某时间段内多条回复的总结任务（用户提示）。"""
+    blocks: list[str] = []
+    up = (user_prefix or '').strip()
+    if up:
+        max_u = 4000
+        if len(up) > max_u:
+            up = up[:max_u] + '\n\n（前置说明已截断）'
+        blocks.extend(
+            [
+                '【用户前置说明】（请在遵守安全与事实的前提下尽量落实）',
+                up,
+                '',
+            ]
+        )
+    nm = (author_name or '').strip()
+    author_line = f'作者 uid={author_id}' + (f'（{nm}）' if nm else '')
+    rs = range_start.strftime('%Y-%m-%d %H:%M')
+    re = range_end.strftime('%Y-%m-%d %H:%M')
+    tn = thread_name or '(无)'
+    blocks.extend(
+        [
+            f'下面是 NGA 论坛帖子「{tn}」（tid={tid}）中，{author_line} 在时间段 [{rs} ~ {re})（左闭右开）内的多条回复（按时间排序）。',
+            f'共 {reply_count} 条。每条含可选【引用】与该条【正文】。',
+            '',
+            '请用简体中文撰写**综合性总结**，要求：',
+            '1）概括该作者在该时段内讨论的核心主题与态度变化（如有）；',
+            '2）提炼其关键论点、论据或情绪走向；',
+            '3）若有多条回复，说明它们之间的承接关系；',
+            '4）对明显的术语/缩写可简要解释，无法确定处请标注「不确定」；',
+            '5）使用小标题与分点，条理清晰。',
+            '',
+            '—— 时段内回复汇编 ——',
+            transcript,
+        ]
+    )
+    return '\n'.join(blocks)
+
+
+def _default_nga_summary_range_16h(now: datetime | None = None) -> tuple[datetime, datetime]:
+    """与楼层页「时段总结」默认一致：昨天 16:00 ～ 今天 16:00（左闭右开）。"""
+    now = now or datetime.now()
+    end = datetime.combine(now.date(), time(16, 0))
+    start = end - timedelta(days=1)
+    return start, end
+
+
+def _execute_nga_author_range_summary(
+    tid: int,
+    author_id: int,
+    start_dt: datetime,
+    end_dt: datetime,
+    group_id: str,
+    extra_prompt: str,
+) -> dict:
+    """
+    执行关注作者时段总结并发送。返回 dict:
+      ok, message, reply_count(可选), http_status(失败时)
+    """
+    from Managers.gemini_client import (
+        GeminiAuthError,
+        GeminiClient,
+        GeminiConfigError,
+        GeminiRequestError,
+        GeminiTransientError,
+    )
+
+    if nga_db is None:
+        return {'ok': False, 'message': 'NGA 模块未加载', 'http_status': 500}
+
+    thread = nga_db.get_thread_config(tid)
+    if not thread:
+        return {'ok': False, 'message': '帖子配置不存在', 'http_status': 404}
+
+    watch_ids = thread.get('watch_author_ids') or []
+    watch_set: set[int] = set()
+    for x in watch_ids:
+        try:
+            watch_set.add(int(x))
+        except (TypeError, ValueError):
+            continue
+    if author_id < 1 or author_id not in watch_set:
+        return {'ok': False, 'message': 'author_id 必须在本帖的关注作者列表中', 'http_status': 400}
+
+    gid_key = str(group_id or '').strip()
+    if not gid_key or gid_key == '0':
+        return {'ok': False, 'message': '未选择有效的消息群组', 'http_status': 400}
+
+    db_chk = Database.Create()
+    try:
+        db_chk.ensure_message_group_tables()
+        valid_group_ids = {str(g.get('group_id', '') or '') for g in (db_chk.get_all_message_groups() or [])}
+    finally:
+        db_chk.close()
+    if gid_key not in valid_group_ids:
+        return {'ok': False, 'message': '所选消息群组不存在', 'http_status': 400}
+
+    if end_dt <= start_dt:
+        return {'ok': False, 'message': '结束时间须晚于开始时间', 'http_status': 400}
+    if end_dt - start_dt > timedelta(days=62):
+        return {'ok': False, 'message': '时间段最长不超过 62 天', 'http_status': 400}
+
+    entries = _nga_collect_author_floors_in_range(tid, author_id, start_dt, end_dt)
+    if not entries:
+        return {
+            'ok': False,
+            'message': '该时段内没有该作者的已抓取回复，请调整时间范围或确认爬虫已抓取。',
+            'http_status': 400,
+        }
+
+    author_name = ''
+    for _, f in entries:
+        if f.get('author_name'):
+            author_name = str(f['author_name']).strip()
+            break
+
+    transcript = _build_author_daily_transcript(entries)
+    thread_name = (thread.get('name') or '').strip() or str(tid)
+    ep = (extra_prompt or '').strip()
+
+    try:
+        client = GeminiClient.from_config(config)
+    except GeminiConfigError as e:
+        return {'ok': False, 'message': str(e), 'http_status': 400}
+
+    prompt = _build_author_daily_summary_prompt(
+        thread_name=thread_name,
+        tid=tid,
+        range_start=start_dt,
+        range_end=end_dt,
+        author_id=author_id,
+        author_name=author_name,
+        reply_count=len(entries),
+        transcript=transcript,
+        user_prefix=ep or None,
+    )
+    system_instruction = (
+        '你是熟悉中文网络论坛的阅读与归纳助手，输出必须使用简体中文。'
+        '只依据用户提供的「时段内回复汇编」做总结，不要编造未出现的言论或事实。'
+    )
+
+    try:
+        result = client.generate(
+            prompt,
+            system_instruction=system_instruction,
+            temperature=0.35,
+            max_output_tokens=8192,
+        )
+    except GeminiAuthError as e:
+        return {'ok': False, 'message': str(e), 'http_status': 401}
+    except (GeminiRequestError, GeminiTransientError) as e:
+        return {'ok': False, 'message': str(e), 'http_status': 502}
+
+    ai_text = (result.text or '').strip()
+    if not ai_text:
+        return {'ok': False, 'message': 'Gemini 未返回有效总结内容', 'http_status': 502}
+
+    header = (
+        f'[NGA·时段总结] {thread_name} {author_name or ""} uid={author_id} '
+        f'{start_dt.strftime("%Y-%m-%d %H:%M")} ~ {end_dt.strftime("%Y-%m-%d %H:%M")} '
+        f'共{len(entries)}条\n'
+        f'{"─" * 24}\n'
+    )
+    outbound = header + ai_text
+
+    try:
+        send_notify_to_group(int(gid_key), outbound)
+    except Exception as e:
+        logger.error(f'按日总结投递通知失败: {e}', exc_info=True)
+        return {'ok': False, 'message': f'总结已生成，但发送到群组失败: {e}', 'http_status': 500}
+
+    return {
+        'ok': True,
+        'message': f'已生成总结并发送到所选消息群组（时段内共 {len(entries)} 条回复）',
+        'reply_count': len(entries),
+    }
+
+
+def _parse_db_datetime(val) -> datetime | None:
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace('Z', '+00:00').split('+', 1)[0])
+    except Exception:
+        return _parse_nga_post_datetime(s)
+
+
+def _run_nga_auto_summary_due_tasks_impl() -> None:
+    """扫描 DB 中启用的 NGA 自动时段总结任务，到达每日设定时间后执行（默认 16:00～16:00 窗口）。"""
+    if nga_db is None:
+        return
+    db = Database.Create()
+    try:
+        db.ensure_nga_auto_summary_task_tables()
+        tasks = db.list_nga_auto_summary_tasks_enabled()
+    finally:
+        db.close()
+    now = datetime.now()
+    for t in tasks:
+        try:
+            task_id = int(t['id'])
+            tid = int(t['tid'])
+            author_id = int(t['author_id'])
+            gid = str(t['message_group_id'] or '').strip()
+            rt = (t.get('run_time') or '').strip()
+            if not rt or ':' not in rt:
+                continue
+            parts = rt.split(':')
+            h, m = int(parts[0]), int(parts[1])
+            run_at_today = datetime.combine(now.date(), time(h, m))
+        except Exception:
+            continue
+
+        last_run_at = _parse_db_datetime(t.get('last_run_at'))
+        if now < run_at_today:
+            continue
+        if last_run_at is not None and last_run_at >= run_at_today:
+            continue
+
+        extra = (t.get('extra_prompt') or '').strip()
+        start_dt, end_dt = _default_nga_summary_range_16h(now)
+        out = _execute_nga_author_range_summary(
+            tid=tid,
+            author_id=author_id,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            group_id=gid,
+            extra_prompt=extra,
+        )
+        if out.get('ok'):
+            db2 = Database.Create()
+            try:
+                db2.update_nga_auto_summary_task_last_run(task_id, now)
+            finally:
+                db2.close()
+            logger.info(
+                "NGA 自动时段总结已执行 task_id=%s tid=%s author=%s reply_count=%s",
+                task_id,
+                tid,
+                author_id,
+                out.get('reply_count'),
+            )
+        else:
+            logger.warning(
+                "NGA 自动时段总结未成功 task_id=%s tid=%s author=%s: %s",
+                task_id,
+                tid,
+                author_id,
+                out.get('message'),
+            )
 
 
 @bp.route('/api/nga_export_author', methods=['GET'])
@@ -3477,6 +4064,225 @@ def nga_floor_ai_explain(tid: int, pid: int):
         return jsonify({'success': True, 'message': 'AI 解释已发送到所选消息群组'})
     except Exception as e:
         logger.error(f"NGA 楼层 AI 解释失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/nga_floors/<int:tid>/author_daily_summary', methods=['POST'])
+def nga_author_daily_summary(tid: int):
+    """
+    将某关注作者在指定时间段内的已抓取回复拼成文本，调用 Gemini 做总结，
+    并通过所选消息群组发送（与单楼 AI 解释相同通道）。
+    JSON：author_id, start_datetime, end_datetime（ISO 或 datetime-local，区间为 [start, end)），
+    message_group_id（可选）, extra_prompt（可选）。
+    兼容旧参数 date=YYYY-MM-DD，等价于该自然日 [00:00, 次日 00:00)。
+    """
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        thread = nga_db.get_thread_config(tid)
+        if not thread:
+            return jsonify({'success': False, 'message': '帖子配置不存在'}), 404
+
+        payload = request.get_json(silent=True) or {}
+        try:
+            author_id = int(payload.get('author_id'))
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': '缺少或无效参数 author_id'}), 400
+
+        start_dt = _parse_request_datetime(payload.get('start_datetime'))
+        end_dt = _parse_request_datetime(payload.get('end_datetime'))
+        if (start_dt is None or end_dt is None) and (payload.get('date') or '').strip():
+            try:
+                d0 = datetime.strptime((payload.get('date') or '').strip(), '%Y-%m-%d').date()
+            except Exception:
+                d0 = None
+            if d0 is not None:
+                start_dt = datetime.combine(d0, time.min)
+                end_dt = datetime.combine(d0 + timedelta(days=1), time.min)
+        if start_dt is None or end_dt is None:
+            return jsonify(
+                {'success': False, 'message': '请提供 start_datetime 与 end_datetime（或兼容参数 date）'}
+            ), 400
+
+        extra_prompt = (payload.get('extra_prompt') or payload.get('prefix_prompt') or '').strip()
+        raw_gid = payload.get('message_group_id')
+        if raw_gid is None or str(raw_gid).strip() in ('', '0'):
+            group_id = thread.get('message_group_id')
+        else:
+            group_id = str(raw_gid).strip()
+
+        out = _execute_nga_author_range_summary(
+            tid=tid,
+            author_id=author_id,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            group_id=str(group_id or '').strip(),
+            extra_prompt=extra_prompt,
+        )
+        if not out.get('ok'):
+            return jsonify({'success': False, 'message': out.get('message')}), int(out.get('http_status') or 500)
+        body: dict = {'success': True, 'message': out.get('message')}
+        if out.get('reply_count') is not None:
+            body['reply_count'] = out['reply_count']
+        return jsonify(body)
+    except Exception as e:
+        logger.error(f'NGA 按日总结失败: {str(e)}', exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+def _normalize_hhmm(s: str) -> str | None:
+    s = (s or '').strip()
+    if not s or ':' not in s:
+        return None
+    parts = s.split(':')
+    if len(parts) < 2:
+        return None
+    try:
+        h, m = int(parts[0]), int(parts[1])
+    except (TypeError, ValueError):
+        return None
+    if h < 0 or h > 23 or m < 0 or m > 59:
+        return None
+    return f'{h:02d}:{m:02d}'
+
+
+@bp.route('/api/nga_floors/<int:tid>/auto_summary_tasks', methods=['GET'])
+def list_nga_auto_summary_tasks_api(tid: int):
+    """列出某帖下已保存的 NGA 自动时段总结任务。"""
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        thread = nga_db.get_thread_config(tid)
+        if not thread:
+            return jsonify({'success': False, 'message': '帖子配置不存在'}), 404
+        db = Database.Create()
+        try:
+            rows = db.list_nga_auto_summary_tasks_by_tid(tid)
+        finally:
+            db.close()
+        aids = []
+        for r in rows:
+            try:
+                aids.append(int(r['author_id']))
+            except (TypeError, ValueError):
+                pass
+        name_map = nga_db.resolve_author_names_for_tid(tid, sorted(set(aids))) if aids else {}
+        out = []
+        for r in rows:
+            aid = int(r['author_id'])
+            lr = r.get('last_run_at')
+            if lr is not None and hasattr(lr, 'isoformat'):
+                lr_s = lr.isoformat(sep=' ', timespec='seconds')
+            else:
+                lr_s = str(lr) if lr is not None else None
+            cr = r.get('created_at')
+            if cr is not None and hasattr(cr, 'isoformat'):
+                cr_s = cr.isoformat(sep=' ', timespec='seconds')
+            else:
+                cr_s = str(cr) if cr is not None else None
+            out.append(
+                {
+                    'id': int(r['id']),
+                    'tid': int(r['tid']),
+                    'author_id': aid,
+                    'forum_name': (name_map.get(aid) or '').strip(),
+                    'message_group_id': str(r.get('message_group_id') or ''),
+                    'run_time': str(r.get('run_time') or ''),
+                    'extra_prompt': r.get('extra_prompt') or '',
+                    'enabled': bool(int(r.get('enabled') or 0)),
+                    'last_run_at': lr_s,
+                    'created_at': cr_s,
+                }
+            )
+        return jsonify({'success': True, 'tasks': out})
+    except Exception as e:
+        logger.error(f'列出 NGA 自动总结任务失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/nga_floors/<int:tid>/auto_summary_tasks', methods=['POST'])
+def create_nga_auto_summary_task_api(tid: int):
+    """
+    新增自动时段总结任务：每日 run_time 执行，对关注作者 uid 使用默认 [昨16:00,今16:00) 窗口。
+    JSON: author_id, message_group_id, run_time (HH:MM), extra_prompt（可选）, enabled（可选，默认 1）
+    """
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        thread = nga_db.get_thread_config(tid)
+        if not thread:
+            return jsonify({'success': False, 'message': '帖子配置不存在'}), 404
+        watch_ids = thread.get('watch_author_ids') or []
+        watch_set: set[int] = set()
+        for x in watch_ids:
+            try:
+                watch_set.add(int(x))
+            except (TypeError, ValueError):
+                continue
+        payload = request.get_json(silent=True) or {}
+        try:
+            author_id = int(payload.get('author_id'))
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': '缺少或无效参数 author_id'}), 400
+        if author_id < 1 or author_id not in watch_set:
+            return jsonify({'success': False, 'message': 'author_id 必须在本帖的关注作者列表中'}), 400
+        rt = _normalize_hhmm(str(payload.get('run_time') or ''))
+        if not rt:
+            return jsonify({'success': False, 'message': 'run_time 须为 HH:MM（24 小时制）'}), 400
+        raw_gid = payload.get('message_group_id')
+        if raw_gid is None or str(raw_gid).strip() in ('', '0'):
+            gid = thread.get('message_group_id')
+        else:
+            gid = str(raw_gid).strip()
+        if gid is None or str(gid).strip() in ('', '0'):
+            return jsonify({'success': False, 'message': '未选择有效的消息群组'}), 400
+        db_chk = Database.Create()
+        try:
+            db_chk.ensure_message_group_tables()
+            valid = {str(g.get('group_id', '') or '') for g in (db_chk.get_all_message_groups() or [])}
+        finally:
+            db_chk.close()
+        if str(gid).strip() not in valid:
+            return jsonify({'success': False, 'message': '所选消息群组不存在'}), 400
+        extra = (payload.get('extra_prompt') or '').strip()
+        en = int(payload.get('enabled', 1) or 0)
+        en = 1 if en else 0
+        db = Database.Create()
+        try:
+            ok, res = db.insert_nga_auto_summary_task(
+                tid=tid,
+                author_id=author_id,
+                message_group_id=str(gid).strip(),
+                run_time=rt,
+                extra_prompt=extra or None,
+                enabled=en,
+            )
+        finally:
+            db.close()
+        if not ok:
+            return jsonify({'success': False, 'message': str(res)}), 400
+        return jsonify({'success': True, 'message': '已保存自动任务', 'id': int(res)})
+    except Exception as e:
+        logger.error(f'创建 NGA 自动总结任务失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/nga_floors/<int:tid>/auto_summary_tasks/<int:task_id>', methods=['DELETE'])
+def delete_nga_auto_summary_task_api(tid: int, task_id: int):
+    if nga_db is None:
+        return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
+    try:
+        db = Database.Create()
+        try:
+            row = db.get_nga_auto_summary_task_by_id(task_id)
+            if not row or int(row['tid']) != int(tid):
+                return jsonify({'success': False, 'message': '任务不存在'}), 404
+            db.delete_nga_auto_summary_task(task_id)
+        finally:
+            db.close()
+        return jsonify({'success': True, 'message': '已删除'})
+    except Exception as e:
+        logger.error(f'删除 NGA 自动总结任务失败: {e}', exc_info=True)
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
@@ -3935,7 +4741,7 @@ def filter_stocks():
                     'matched_count': 1#len(matched_stocks)
                 }
                 delay = config.get('DEFAULT', 'UPDATE_STOCKS_DELAY')
-                time.sleep(float(delay))
+                time_module.sleep(float(delay))
                 yield f"data: {json.dumps(progress)}\n\n"
                 #signalMsg = ""
                 #if index == 2:

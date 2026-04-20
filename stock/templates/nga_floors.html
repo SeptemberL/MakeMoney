@@ -57,6 +57,11 @@
                     {% endfor %}
                 </select>
             </div>
+            {% if watch_authors %}
+            <div class="align-self-end pb-1">
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="openAuthorDaySummaryModal()">时段总结</button>
+            </div>
+            {% endif %}
             {% if not (watch_authors or []) %}
             <span class="text-muted small">未配置关注作者时仅可查看全部楼层。</span>
             {% else %}
@@ -86,6 +91,41 @@
         const TID = {{ tid }};
         const DEFAULT_MESSAGE_GROUP_ID = {{ default_message_group_id | tojson }};
         var authorListPage = 1;
+
+        function putNgaSavedPrompts(body) {
+            return fetch('/api/nga_floors/' + TID + '/saved_prompts', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            })
+                .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, d: d }; }); })
+                .then(function(x) {
+                    alert(x.d.success ? (x.d.message || '已保存到帖子配置') : (x.d.message || '保存失败'));
+                })
+                .catch(function(err) {
+                    alert('请求失败: ' + err.message);
+                });
+        }
+        function saveAiExplainPromptToDb() {
+            var el = document.getElementById('aiExplainExtraPrompt');
+            if (!el) return;
+            putNgaSavedPrompts({ ai_explain_prompt: el.value });
+        }
+        function clearAiExplainPromptToDb() {
+            var el = document.getElementById('aiExplainExtraPrompt');
+            if (el) el.value = '';
+            putNgaSavedPrompts({ ai_explain_prompt: '' });
+        }
+        function saveAuthorSummaryPromptToDb() {
+            var el = document.getElementById('summaryExtraPrompt');
+            if (!el) return;
+            putNgaSavedPrompts({ author_summary_prompt: el.value });
+        }
+        function clearAuthorSummaryPromptToDb() {
+            var el = document.getElementById('summaryExtraPrompt');
+            if (el) el.value = '';
+            putNgaSavedPrompts({ author_summary_prompt: '' });
+        }
 
         function loadFloors(requestedPage) {
             const loading  = document.getElementById('loading');
@@ -256,15 +296,268 @@
                 });
         }
 
+        function pad2(n) {
+            return (n < 10 ? '0' : '') + n;
+        }
+
+        function formatDatetimeLocal(d) {
+            return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
+                + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+        }
+
+        /** 默认：当天 16:00 ～ 前一天 16:00（区间 [start, end) 左闭右开，与后端一致） */
+        function defaultAuthorSummaryRange() {
+            var now = new Date();
+            var end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 16, 0, 0, 0);
+            var start = new Date(end);
+            start.setDate(start.getDate() - 1);
+            return { start: start, end: end };
+        }
+
+        function loadNgaAutoSummaryTasks() {
+            var ul = document.getElementById('ngaAutoSummaryTaskList');
+            if (!ul) return;
+            ul.innerHTML = '<li class="list-group-item text-muted small">加载中…</li>';
+            fetch('/api/nga_floors/' + TID + '/auto_summary_tasks')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    ul.innerHTML = '';
+                    if (!data.success) {
+                        ul.innerHTML = '<li class="list-group-item text-danger small">' + escapeHtml(data.message || '加载失败') + '</li>';
+                        return;
+                    }
+                    var tasks = data.tasks || [];
+                    if (!tasks.length) {
+                        ul.innerHTML = '<li class="list-group-item text-muted small">暂无已保存的自动任务</li>';
+                        return;
+                    }
+                    tasks.forEach(function(t) {
+                        var li = document.createElement('li');
+                        li.className = 'list-group-item d-flex justify-content-between align-items-start flex-wrap gap-2';
+                        var nick = t.forum_name ? (escapeHtml(t.forum_name) + ' ') : '';
+                        var ex = (t.extra_prompt || '').trim();
+                        var exHtml = ex ? ('<div class="mt-1 small text-break">' + escapeHtml(ex.length > 120 ? ex.slice(0, 120) + '…' : ex) + '</div>') : '';
+                        li.innerHTML = '<div class="me-auto small">' +
+                            '<div><strong>uid ' + t.author_id + '</strong> ' + nick + '</div>' +
+                            '<div class="text-muted">每日 ' + escapeHtml(t.run_time || '') + ' · 群组 ' + escapeHtml(String(t.message_group_id || '')) + '</div>' +
+                            exHtml +
+                            '</div>' +
+                            '<button type="button" class="btn btn-sm btn-outline-danger flex-shrink-0">删除</button>';
+                        var btn = li.querySelector('button');
+                        if (btn) {
+                            btn.addEventListener('click', function() { deleteNgaAutoSummaryTask(t.id); });
+                        }
+                        ul.appendChild(li);
+                    });
+                })
+                .catch(function() {
+                    ul.innerHTML = '<li class="list-group-item text-danger small">加载失败</li>';
+                });
+        }
+
+        function saveNgaAutoSummaryTask() {
+            var cb = document.getElementById('summaryAutoDailyEnabled');
+            if (!cb || !cb.checked) {
+                alert('请先勾选「启用每日自动总结」');
+                return;
+            }
+            var authorId = (document.getElementById('summaryAuthorSelect').value || '').trim();
+            var gid = (document.getElementById('summaryMessageGroup').value || '').trim();
+            var rt = (document.getElementById('summaryAutoRunTime').value || '').trim();
+            var extra = (document.getElementById('summaryExtraPrompt').value || '').trim();
+            if (!authorId) {
+                alert('请选择关注作者');
+                return;
+            }
+            if (!gid || gid === '0') {
+                alert('请选择消息群组');
+                return;
+            }
+            if (!rt) {
+                alert('请选择每日执行时间');
+                return;
+            }
+            var btn = document.getElementById('btnSaveAutoSummaryTask');
+            var old = btn ? btn.textContent : '';
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = '保存中…';
+            }
+            fetch('/api/nga_floors/' + TID + '/auto_summary_tasks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    author_id: parseInt(authorId, 10),
+                    message_group_id: gid,
+                    run_time: rt,
+                    extra_prompt: extra,
+                    enabled: 1
+                })
+            })
+                .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, d: d }; }); })
+                .then(function(x) {
+                    if (x.d.success) {
+                        alert(x.d.message || '已保存');
+                        loadNgaAutoSummaryTasks();
+                    } else {
+                        alert(x.d.message || '保存失败');
+                    }
+                })
+                .catch(function(err) {
+                    alert('请求失败: ' + err.message);
+                })
+                .finally(function() {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = old;
+                    }
+                });
+        }
+
+        function deleteNgaAutoSummaryTask(taskId) {
+            if (!confirm('确定删除该自动总结任务？')) return;
+            fetch('/api/nga_floors/' + TID + '/auto_summary_tasks/' + taskId, { method: 'DELETE' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        loadNgaAutoSummaryTasks();
+                    } else {
+                        alert(data.message || '删除失败');
+                    }
+                })
+                .catch(function(err) {
+                    alert('请求失败: ' + err.message);
+                });
+        }
+
+        function openAuthorDaySummaryModal() {
+            if (!authorDaySummaryModal) return;
+            loadNgaAutoSummaryTasks();
+            var af = document.getElementById('authorFilter');
+            var sa = document.getElementById('summaryAuthorSelect');
+            if (sa && af && af.value) {
+                sa.value = af.value;
+            } else if (sa && sa.options.length) {
+                sa.selectedIndex = 0;
+            }
+            var rng = defaultAuthorSummaryRange();
+            document.getElementById('summaryStart').value = formatDatetimeLocal(rng.start);
+            document.getElementById('summaryEnd').value = formatDatetimeLocal(rng.end);
+            var sel = document.getElementById('summaryMessageGroup');
+            sel.innerHTML = '<option value="">正在加载群组…</option>';
+            sel.disabled = true;
+            fetch('/api/nga_floors/' + TID + '/saved_prompts')
+                .then(function(r) { return r.json(); })
+                .then(function(pr) {
+                    var sm = document.getElementById('summaryExtraPrompt');
+                    if (sm && pr.success) sm.value = pr.author_summary_prompt || '';
+                    return fetch('/api/nga_message_groups');
+                })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    sel.innerHTML = '';
+                    sel.disabled = false;
+                    if (!data.success || !data.groups || !data.groups.length) {
+                        sel.innerHTML = '<option value="0">（无可用消息群组）</option>';
+                        authorDaySummaryModal.show();
+                        return;
+                    }
+                    data.groups.forEach(function(g) {
+                        var opt = document.createElement('option');
+                        opt.value = String(g.group_id);
+                        var chats = (g.chat_list || []).join(', ');
+                        var name = g.name || '';
+                        var parts = ['群组 ' + g.group_id];
+                        if (name) parts.push(name);
+                        if (chats) parts.push(chats);
+                        opt.textContent = parts.join(' · ');
+                        sel.appendChild(opt);
+                    });
+                    if (DEFAULT_MESSAGE_GROUP_ID) {
+                        sel.value = String(DEFAULT_MESSAGE_GROUP_ID);
+                    }
+                    if (!sel.value && sel.options.length) {
+                        sel.selectedIndex = 0;
+                    }
+                    authorDaySummaryModal.show();
+                })
+                .catch(function() {
+                    sel.disabled = false;
+                    sel.innerHTML = '<option value="0">加载失败</option>';
+                    authorDaySummaryModal.show();
+                });
+        }
+
+        function submitAuthorDaySummary() {
+            var authorId = (document.getElementById('summaryAuthorSelect').value || '').trim();
+            var st = (document.getElementById('summaryStart').value || '').trim();
+            var en = (document.getElementById('summaryEnd').value || '').trim();
+            var gid = (document.getElementById('summaryMessageGroup').value || '').trim();
+            var extra = (document.getElementById('summaryExtraPrompt').value || '').trim();
+            if (!authorId) {
+                alert('请选择要总结的关注作者');
+                return;
+            }
+            if (!st || !en) {
+                alert('请填写起始与结束时间');
+                return;
+            }
+            if (st >= en) {
+                alert('结束时间须晚于开始时间');
+                return;
+            }
+            if (!gid || gid === '0') {
+                alert('请选择一个消息群组');
+                return;
+            }
+            var btn = document.getElementById('btnAuthorDaySummarySubmit');
+            var oldText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = '处理中…';
+            fetch('/api/nga_floors/' + TID + '/author_daily_summary', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    author_id: parseInt(authorId, 10),
+                    start_datetime: st,
+                    end_datetime: en,
+                    message_group_id: gid,
+                    extra_prompt: extra
+                })
+            })
+                .then(function(res) { return res.json().then(function(data) { return { data: data }; }); })
+                .then(function(r) {
+                    if (r.data.success) {
+                        authorDaySummaryModal.hide();
+                        alert(r.data.message || '已完成');
+                        loadNgaAutoSummaryTasks();
+                    } else {
+                        alert(r.data.message || '失败');
+                    }
+                })
+                .catch(function(err) {
+                    alert('请求失败: ' + err.message);
+                })
+                .finally(function() {
+                    btn.disabled = false;
+                    btn.textContent = oldText;
+                });
+        }
+
         function openAiExplainModal(pid) {
             if (!aiExplainModal) return;
             document.getElementById('aiExplainPid').value = String(pid);
             document.getElementById('aiExplainFloorHint').textContent = '当前楼层 pid: ' + pid;
-            document.getElementById('aiExplainExtraPrompt').value = '';
             var sel = document.getElementById('aiExplainMessageGroup');
             sel.innerHTML = '<option value="">正在加载群组…</option>';
             sel.disabled = true;
-            fetch('/api/nga_message_groups')
+            fetch('/api/nga_floors/' + TID + '/saved_prompts')
+                .then(function(r) { return r.json(); })
+                .then(function(pr) {
+                    var inp = document.getElementById('aiExplainExtraPrompt');
+                    if (inp && pr.success) inp.value = pr.ai_explain_prompt || '';
+                    return fetch('/api/nga_message_groups');
+                })
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                     sel.innerHTML = '';
@@ -344,6 +637,7 @@
 
         let exportModal = null;
         let aiExplainModal = null;
+        let authorDaySummaryModal = null;
 
         function openExportModal(authorId, authorName) {
             document.getElementById('exportAuthorId').value = String(authorId || '');
@@ -393,6 +687,10 @@
             var aiEl = document.getElementById('aiExplainModal');
             if (aiEl) {
                 aiExplainModal = new bootstrap.Modal(aiEl);
+            }
+            var sdEl = document.getElementById('authorDaySummaryModal');
+            if (sdEl) {
+                authorDaySummaryModal = new bootstrap.Modal(sdEl);
             }
         });
     </script>
@@ -459,6 +757,11 @@
                     <div class="mb-2">
                         <label for="aiExplainExtraPrompt" class="form-label">前置提示词（可选）</label>
                         <textarea class="form-control" id="aiExplainExtraPrompt" rows="5" placeholder="例如：请侧重分析其中的投资逻辑；请用新手能听懂的语言；请对比引用内容与正文的矛盾点…"></textarea>
+                        <div class="d-flex flex-wrap align-items-center gap-2 mt-1">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="saveAiExplainPromptToDb()">保存提示词</button>
+                            <button type="button" class="btn btn-sm btn-outline-danger" onclick="clearAiExplainPromptToDb()">清除已保存</button>
+                            <span class="text-muted small">打开弹窗时会自动填入已保存内容（本机浏览器）。</span>
+                        </div>
                         <div class="form-text">将插在模型任务说明之前，用于补充你的分析角度或风格要求。</div>
                     </div>
                     <div class="alert alert-light border small mb-0">
@@ -468,6 +771,80 @@
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                     <button type="button" class="btn btn-primary" id="btnAiExplainSubmit" onclick="submitAiExplain()">生成并发送</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 关注作者时段总结 -->
+    <div class="modal fade" id="authorDaySummaryModal" tabindex="-1" aria-labelledby="authorDaySummaryModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="authorDaySummaryModalLabel">时段总结（关注作者）</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small">将所选<strong>时间段</strong>内（含起始时刻、不含结束时刻）、该作者在本帖已抓取的回复合并后交给 Gemini 做综合总结，并发送到下方所选消息群组。打开弹窗时默认：<strong>前一天 16:00</strong> 至 <strong>当天 16:00</strong>。</p>
+                    <div class="mb-3">
+                        <label for="summaryAuthorSelect" class="form-label">关注作者</label>
+                        <select class="form-select" id="summaryAuthorSelect">
+                            {% for wa in watch_authors or [] %}
+                            <option value="{{ wa.author_id }}">{% if wa.forum_name %}{{ wa.forum_name }}（uid: {{ wa.author_id }}）{% else %}uid: {{ wa.author_id }}（暂无昵称）{% endif %}</option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">打开弹窗时会尽量与左侧「关注作者」筛选当前选中项对齐。</div>
+                    </div>
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-6">
+                            <label for="summaryStart" class="form-label">起始时间</label>
+                            <input type="datetime-local" class="form-control" id="summaryStart" />
+                        </div>
+                        <div class="col-md-6">
+                            <label for="summaryEnd" class="form-label">结束时间</label>
+                            <input type="datetime-local" class="form-control" id="summaryEnd" />
+                        </div>
+                    </div>
+                    <p class="small text-muted mb-3">区间规则与后端一致：<code>[起始, 结束)</code>，即<strong>不包含</strong>结束时刻整点。</p>
+                    <div class="mb-3">
+                        <label for="summaryMessageGroup" class="form-label">发送到消息群组</label>
+                        <select class="form-select" id="summaryMessageGroup"></select>
+                        <div class="form-text">默认本帖配置的群组，可改为其他已配置群组。</div>
+                    </div>
+                    <div class="mb-2">
+                        <label for="summaryExtraPrompt" class="form-label">前置提示词（可选）</label>
+                        <textarea class="form-control" id="summaryExtraPrompt" rows="3" placeholder="例如：侧重梳理其对盘面的判断；用条目列出看多/看空理由…"></textarea>
+                        <div class="d-flex flex-wrap align-items-center gap-2 mt-1">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="saveAuthorSummaryPromptToDb()">保存提示词</button>
+                            <button type="button" class="btn btn-sm btn-outline-danger" onclick="clearAuthorSummaryPromptToDb()">清除已保存</button>
+                            <span class="text-muted small">与「AI 解释」分开保存；打开弹窗时自动填入。</span>
+                        </div>
+                    </div>
+                    <hr class="my-3" />
+                    <h6 class="mb-2">每日自动总结</h6>
+                    <p class="small text-muted mb-2">勾选并设置时间后点「保存自动任务」：服务器将在<strong>每个自然日</strong>的该时刻，用<strong>默认时段</strong>（昨天 16:00～今天 16:00，左闭右开）对下方所选<strong>关注作者 UID</strong>执行一次时段总结，并发送到所选消息群组（与上面手动「生成总结并发送」相同逻辑）。</p>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="summaryAutoDailyEnabled" />
+                        <label class="form-check-label" for="summaryAutoDailyEnabled">启用每日自动总结（保存时生效）</label>
+                    </div>
+                    <div class="row g-2 mb-2 align-items-end">
+                        <div class="col-md-5">
+                            <label for="summaryAutoRunTime" class="form-label">每日执行时间</label>
+                            <input type="time" class="form-control" id="summaryAutoRunTime" value="09:00" step="60" />
+                        </div>
+                        <div class="col-md-7">
+                            <button type="button" class="btn btn-outline-primary" id="btnSaveAutoSummaryTask" onclick="saveNgaAutoSummaryTask()">保存自动任务</button>
+                            <span class="text-muted small ms-2">使用当前弹窗中的作者、消息群组与前置提示词。</span>
+                        </div>
+                    </div>
+                    <label class="form-label small text-muted">已保存的自动任务</label>
+                    <ul class="list-group list-group-flush border rounded mb-1" id="ngaAutoSummaryTaskList" style="max-height: 14rem; overflow-y: auto;">
+                        <li class="list-group-item text-muted small">打开弹窗时加载…</li>
+                    </ul>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="btnAuthorDaySummarySubmit" onclick="submitAuthorDaySummary()">生成总结并发送</button>
                 </div>
             </div>
         </div>

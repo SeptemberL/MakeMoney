@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>投资日历</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b1220;
+      --card: #101a2f;
+      --card2: #0f1a33;
+      --line: rgba(255,255,255,.08);
+      --muted: rgba(255,255,255,.65);
+      --txt: rgba(255,255,255,.92);
+      --accent: #6ea8fe;
+      --good: #54d18d;
+      --warn: #ffce54;
+      --bad: #ff6b6b;
+    }
+    body { background: radial-gradient(1200px 600px at 20% 10%, rgba(110,168,254,.18), transparent 55%),
+                    radial-gradient(900px 500px at 85% 20%, rgba(84,209,141,.12), transparent 50%),
+                    var(--bg);
+           color: var(--txt); }
+    nav.navbar { display: none !important; }
+    .topbar {
+      display:flex; align-items:center; justify-content:space-between;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(16,26,47,.85), rgba(16,26,47,.65));
+      margin: 10px;
+    }
+    .topbar .title { font-weight: 700; letter-spacing: .2px; }
+    .chip {
+      display:inline-flex; align-items:center; gap:6px;
+      font-size: 12px; color: var(--muted);
+      border: 1px solid var(--line);
+      padding: 4px 8px; border-radius: 999px;
+      background: rgba(255,255,255,.04);
+    }
+    .cal-wrap { margin: 10px; }
+    .cal-card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(16,26,47,.85), rgba(16,26,47,.55));
+      overflow: hidden;
+    }
+    .cal-head {
+      display:flex; align-items:center; justify-content:space-between;
+      padding: 12px 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,.03);
+    }
+    .cal-head .month-title { font-weight: 700; }
+    .cal-grid {
+      display:grid;
+      grid-template-columns: repeat(7, 1fr);
+    }
+    .dow {
+      padding: 10px 8px;
+      font-size: 12px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,.02);
+      text-align:center;
+      user-select:none;
+    }
+    .cell {
+      min-height: 104px;
+      padding: 8px 8px 10px 8px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      cursor: pointer;
+      position: relative;
+      background: rgba(0,0,0,.08);
+    }
+    .cell:nth-child(7n) { border-right: none; }
+    .cell:hover { background: rgba(110,168,254,.10); }
+    .cell.muted { opacity: .45; }
+    .daynum { font-size: 13px; font-weight: 700; }
+    .today-badge {
+      position:absolute; top: 8px; right: 8px;
+      font-size: 11px; color: #0b1220;
+      background: var(--accent);
+      padding: 2px 6px; border-radius: 8px;
+    }
+    .has-items-dot {
+      position:absolute; bottom: 10px; left: 10px;
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--good);
+      box-shadow: 0 0 0 3px rgba(84,209,141,.18);
+    }
+    .preview {
+      margin-top: 6px;
+      font-size: 12px;
+      color: rgba(255,255,255,.78);
+      line-height: 1.25;
+      max-height: 3.7em;
+      overflow: hidden;
+    }
+    .modal-content { background: #0f1930; color: var(--txt); border: 1px solid var(--line); }
+    .modal-header, .modal-footer { border-color: var(--line); }
+    .form-control, .form-select, textarea {
+      background: rgba(255,255,255,.06) !important;
+      color: var(--txt) !important;
+      border-color: rgba(255,255,255,.14) !important;
+    }
+    .form-control::placeholder { color: rgba(255,255,255,.4); }
+    .list-group-item {
+      background: rgba(255,255,255,.03);
+      color: var(--txt);
+      border-color: var(--line);
+      cursor: pointer;
+    }
+    .list-group-item:hover { background: rgba(110,168,254,.08); }
+    .list-group-item.active {
+      background: rgba(110,168,254,.20);
+      border-color: rgba(110,168,254,.35);
+    }
+    .small-muted { color: var(--muted); font-size: 12px; }
+    .toast-container { z-index: 2000; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="d-flex align-items-center gap-2">
+      <a href="/" class="btn btn-sm btn-outline-light" title="回到主页"><i class="fas fa-arrow-left"></i></a>
+      <div class="title"><i class="fas fa-calendar-alt me-2"></i>投资日历</div>
+      <span class="chip" id="chipMonth"><i class="far fa-calendar"></i><span>--</span></span>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+      <span class="chip"><i class="fas fa-user"></i><span class="small-muted">当前账号数据隔离</span></span>
+    </div>
+  </div>
+
+  <div class="cal-wrap">
+    <div class="cal-card">
+      <div class="cal-head">
+        <div class="d-flex align-items-center gap-2">
+          <div class="month-title" id="monthTitle">--</div>
+          <span class="small-muted" id="monthRange"> </span>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+          <button class="btn btn-sm btn-outline-light" id="btnPrev"><i class="fas fa-chevron-left"></i> 上月</button>
+          <button class="btn btn-sm btn-outline-light" id="btnToday"><i class="fas fa-dot-circle"></i> 今天</button>
+          <button class="btn btn-sm btn-outline-light" id="btnNext">下月 <i class="fas fa-chevron-right"></i></button>
+        </div>
+      </div>
+      <div class="cal-grid" id="dowRow">
+        <div class="dow">一</div><div class="dow">二</div><div class="dow">三</div><div class="dow">四</div><div class="dow">五</div><div class="dow">六</div><div class="dow">日</div>
+      </div>
+      <div class="cal-grid" id="grid"></div>
+    </div>
+  </div>
+
+  <!-- Modal -->
+  <div class="modal fade" id="dayModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <div>
+            <h5 class="modal-title mb-0">日历项</h5>
+            <div class="small-muted" id="modalSub">--</div>
+          </div>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-3">
+            <div class="col-12 col-lg-5">
+              <div class="d-flex align-items-center justify-content-between mb-2">
+                <div class="fw-bold">已添加列表</div>
+                <button class="btn btn-sm btn-outline-light" id="btnNew"><i class="fas fa-plus"></i> 新建</button>
+              </div>
+              <div class="list-group" id="itemList"></div>
+              <div class="small-muted mt-2" id="listHint"> </div>
+            </div>
+            <div class="col-12 col-lg-7">
+              <div class="fw-bold mb-2">编辑</div>
+              <div class="mb-2">
+                <label class="form-label small-muted">日期</label>
+                <input class="form-control" id="fDate" disabled />
+              </div>
+              <div class="mb-2">
+                <label class="form-label small-muted">内容</label>
+                <textarea class="form-control" id="fContent" rows="4" placeholder="请输入日历内容（必填）"></textarea>
+              </div>
+              <div class="mb-2">
+                <label class="form-label small-muted">提醒消息 group</label>
+                <input class="form-control" id="fGroup" placeholder="可选，最多 128 字符" />
+              </div>
+              <div class="mb-2">
+                <label class="form-label small-muted">提醒消息内容</label>
+                <textarea class="form-control" id="fReminder" rows="3" placeholder="可选"></textarea>
+              </div>
+              <div class="border-top border-secondary pt-3 mt-2 mb-2">
+                <div class="fw-bold mb-2">提醒时间</div>
+                <div class="small-muted mb-3">
+                  以<strong>日历日当天</strong>的「基准时间」为准：第一次提醒在基准时刻之前「提前」若干分钟；当日共提醒「次数」次，多次之间按「间隔」分钟递增（实际推送需后续接入调度任务）。
+                </div>
+                <div class="row g-2">
+                  <div class="col-md-6">
+                    <label class="form-label small-muted">当日基准时间</label>
+                    <input class="form-control" type="time" id="fAnchor" value="09:00" />
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label small-muted">提前多久提醒（分钟）</label>
+                    <input class="form-control" type="number" id="fAdvance" min="0" max="4320" step="1" value="0" />
+                    <div class="small-muted mt-1">0 表示在基准时刻提醒；最大 4320（72 小时）。</div>
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label small-muted">当日提醒次数</label>
+                    <select class="form-select" id="fCount"></select>
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label small-muted">提醒间隔（分钟）</label>
+                    <input class="form-control" type="number" id="fInterval" min="5" max="1440" step="1" value="60" />
+                    <div class="small-muted mt-1">当日提醒次数大于 1 时生效；5～1440。</div>
+                  </div>
+                </div>
+              </div>
+              <div class="d-flex align-items-center justify-content-between">
+                <div class="small-muted" id="editMeta"> </div>
+                <div class="d-flex gap-2">
+                  <button class="btn btn-outline-danger" id="btnDelete" disabled><i class="fas fa-trash"></i> 删除</button>
+                  <button class="btn btn-primary" id="btnSave"><i class="fas fa-save"></i> 保存</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <span class="small-muted">提示：点击左侧列表项可进入编辑；新建时会创建同一天的新的条目。</span>
+          <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-container position-fixed top-0 end-0 p-3">
+    <div class="toast align-items-center text-bg-dark border-0" id="toast" role="alert" aria-live="assertive" aria-atomic="true">
+      <div class="d-flex">
+        <div class="toast-body" id="toastBody"> </div>
+        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    (function () {
+      const pad2 = (n) => String(n).padStart(2, '0');
+      const isoDate = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+      const parseIso = (s) => {
+        if (!s) return null;
+        const m = String(s).slice(0,10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!m) return null;
+        const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+        if (Number.isNaN(d.getTime())) return null;
+        return d;
+      };
+
+      const toastEl = document.getElementById('toast');
+      const toastBody = document.getElementById('toastBody');
+      const toast = new bootstrap.Toast(toastEl, { delay: 2200 });
+      const showToast = (msg) => { toastBody.textContent = msg; toast.show(); };
+
+      const grid = document.getElementById('grid');
+      const monthTitle = document.getElementById('monthTitle');
+      const monthRange = document.getElementById('monthRange');
+      const chipMonth = document.querySelector('#chipMonth span');
+      const btnPrev = document.getElementById('btnPrev');
+      const btnNext = document.getElementById('btnNext');
+      const btnToday = document.getElementById('btnToday');
+
+      const modalEl = document.getElementById('dayModal');
+      const modal = new bootstrap.Modal(modalEl);
+      const modalSub = document.getElementById('modalSub');
+      const itemList = document.getElementById('itemList');
+      const listHint = document.getElementById('listHint');
+      const btnNew = document.getElementById('btnNew');
+      const btnDelete = document.getElementById('btnDelete');
+      const btnSave = document.getElementById('btnSave');
+      const fDate = document.getElementById('fDate');
+      const fContent = document.getElementById('fContent');
+      const fGroup = document.getElementById('fGroup');
+      const fReminder = document.getElementById('fReminder');
+      const fAnchor = document.getElementById('fAnchor');
+      const fAdvance = document.getElementById('fAdvance');
+      const fCount = document.getElementById('fCount');
+      const fInterval = document.getElementById('fInterval');
+      const editMeta = document.getElementById('editMeta');
+
+      for (let i = 1; i <= 24; i += 1) {
+        const o = document.createElement('option');
+        o.value = String(i);
+        o.textContent = `${i} 次`;
+        fCount.appendChild(o);
+      }
+
+      let view = new Date();
+      view.setDate(1);
+      let monthItems = []; // full month items
+      let itemsByDate = {}; // iso -> list
+      let selectedDateIso = null;
+      let selectedItemId = null;
+
+      const apiGet = async (startIso, endIso) => {
+        const url = `/api/investment_calendar/items?start_date=${encodeURIComponent(startIso)}&end_date=${encodeURIComponent(endIso)}`;
+        const r = await fetch(url, { credentials: 'same-origin' });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.success) throw new Error(j.message || '请求失败');
+        return j.items || [];
+      };
+      const apiCreate = async (payload) => {
+        const r = await fetch('/api/investment_calendar/items', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify(payload || {})
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.success) throw new Error(j.message || '保存失败');
+        return j.item;
+      };
+      const apiUpdate = async (id, payload) => {
+        const r = await fetch('/api/investment_calendar/items/' + encodeURIComponent(id), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify(payload || {})
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.success) throw new Error(j.message || '保存失败');
+        return j.item;
+      };
+      const apiDelete = async (id) => {
+        const r = await fetch('/api/investment_calendar/items/' + encodeURIComponent(id), {
+          method: 'DELETE',
+          credentials: 'same-origin'
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.success) throw new Error(j.message || '删除失败');
+        return true;
+      };
+
+      const startOfMonth = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
+      const endOfMonth = (d) => new Date(d.getFullYear(), d.getMonth() + 1, 0);
+      const mondayBasedDow = (jsDay) => (jsDay === 0 ? 7 : jsDay); // 1..7
+
+      const syncRemindIntervalEnabled = () => {
+        const c = parseInt(fCount.value, 10) || 1;
+        fInterval.disabled = c <= 1;
+      };
+
+      const remindSummary = (it) => {
+        if (!it) return '';
+        const a = (it.remind_anchor_time || '09:00').slice(0, 5);
+        const adv = Number(it.remind_advance_minutes) || 0;
+        const cnt = Number(it.remind_count_per_day) || 1;
+        const iv = Number(it.remind_interval_minutes) || 60;
+        if (cnt <= 1) return `⏰ ${a} 提前${adv}分×1`;
+        return `⏰ ${a} 提前${adv}分×${cnt} 间隔${iv}分`;
+      };
+
+      const rebuildIndex = () => {
+        itemsByDate = {};
+        for (const it of monthItems || []) {
+          const k = String(it.date || '').slice(0,10);
+          if (!k) continue;
+          if (!itemsByDate[k]) itemsByDate[k] = [];
+          itemsByDate[k].push(it);
+        }
+      };
+
+      const refreshMonth = async () => {
+        const s = startOfMonth(view);
+        const e = endOfMonth(view);
+        const sIso = isoDate(s);
+        const eIso = isoDate(e);
+        monthTitle.textContent = `${view.getFullYear()} 年 ${pad2(view.getMonth() + 1)} 月`;
+        chipMonth.textContent = `${view.getFullYear()}-${pad2(view.getMonth() + 1)}`;
+        monthRange.textContent = `${sIso} ~ ${eIso}`;
+        try {
+          monthItems = await apiGet(sIso, eIso);
+          rebuildIndex();
+          renderGrid();
+        } catch (e) {
+          showToast(e.message || '加载失败');
+        }
+      };
+
+      const renderGrid = () => {
+        grid.innerHTML = '';
+        const s = startOfMonth(view);
+        const e = endOfMonth(view);
+        const todayIso = isoDate(new Date());
+
+        // start cell date: go back to Monday
+        const firstDow = mondayBasedDow(s.getDay());
+        const start = new Date(s);
+        start.setDate(s.getDate() - (firstDow - 1));
+
+        const totalCells = 42; // 6 weeks
+        for (let i = 0; i < totalCells; i++) {
+          const d = new Date(start);
+          d.setDate(start.getDate() + i);
+          const dIso = isoDate(d);
+          const inMonth = d.getMonth() === view.getMonth();
+          const items = itemsByDate[dIso] || [];
+
+          const div = document.createElement('div');
+          div.className = 'cell' + (inMonth ? '' : ' muted');
+          div.dataset.iso = dIso;
+          div.innerHTML = `
+            <div class="daynum">${d.getDate()}</div>
+            ${dIso === todayIso ? '<div class="today-badge">今天</div>' : ''}
+            ${items.length ? '<div class="has-items-dot"></div>' : ''}
+            ${items.length ? `<div class="preview">${escapeHtml(items[0].content || '')}${items.length > 1 ? `<span class="small-muted">  +${items.length - 1}</span>` : ''}</div>` : ''}
+          `;
+          div.addEventListener('click', () => openDay(dIso));
+          grid.appendChild(div);
+        }
+      };
+
+      const escapeHtml = (s) => String(s || '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+
+      const openDay = (dIso) => {
+        selectedDateIso = dIso;
+        selectedItemId = null;
+        modalSub.textContent = `日期：${dIso}`;
+        fDate.value = dIso;
+        rebuildDayList();
+        setEditorNew();
+        modal.show();
+      };
+
+      const rebuildDayList = () => {
+        const items = (itemsByDate[selectedDateIso] || []).slice();
+        itemList.innerHTML = '';
+        if (!items.length) {
+          listHint.textContent = '当前日期还没有日历项。你可以直接在右侧填写并保存。';
+          return;
+        }
+        listHint.textContent = `共 ${items.length} 条（点击可编辑）`;
+        for (const it of items) {
+          const a = document.createElement('a');
+          a.className = 'list-group-item list-group-item-action';
+          a.dataset.id = it.id;
+          a.innerHTML = `
+            <div class="d-flex w-100 justify-content-between">
+              <div class="fw-bold text-truncate" style="max-width: 320px;">${escapeHtml(it.content || '')}</div>
+              <small class="small-muted">#${it.id}</small>
+            </div>
+            <div class="small-muted text-truncate">${escapeHtml(remindSummary(it))}</div>
+            <div class="small-muted text-truncate">${escapeHtml(it.reminder_group || '')}</div>
+          `;
+          a.addEventListener('click', () => setEditorEdit(it.id));
+          itemList.appendChild(a);
+        }
+      };
+
+      const setEditorNew = () => {
+        selectedItemId = null;
+        btnDelete.disabled = true;
+        fContent.value = '';
+        fGroup.value = '';
+        fReminder.value = '';
+        fAnchor.value = '09:00';
+        fAdvance.value = '0';
+        fCount.value = '1';
+        fInterval.value = '60';
+        syncRemindIntervalEnabled();
+        editMeta.textContent = '新建：保存后会创建一条新的日历项';
+        for (const el of itemList.querySelectorAll('.list-group-item')) el.classList.remove('active');
+      };
+
+      const setEditorEdit = (id) => {
+        const items = (itemsByDate[selectedDateIso] || []);
+        const it = items.find(x => String(x.id) === String(id));
+        if (!it) return;
+        selectedItemId = it.id;
+        btnDelete.disabled = false;
+        fContent.value = it.content || '';
+        fGroup.value = it.reminder_group || '';
+        fReminder.value = it.reminder_message || '';
+        const anchor = (it.remind_anchor_time || '09:00').slice(0, 5);
+        fAnchor.value = anchor.length === 5 ? anchor : '09:00';
+        fAdvance.value = String(Number(it.remind_advance_minutes) || 0);
+        fCount.value = String(Math.min(24, Math.max(1, Number(it.remind_count_per_day) || 1)));
+        fInterval.value = String(Number(it.remind_interval_minutes) || 60);
+        syncRemindIntervalEnabled();
+        editMeta.textContent = `编辑：ID #${it.id}`;
+        for (const el of itemList.querySelectorAll('.list-group-item')) {
+          el.classList.toggle('active', String(el.dataset.id) === String(it.id));
+        }
+      };
+
+      const upsertLocalItem = (item) => {
+        if (!item || !item.date) return;
+        const k = String(item.date).slice(0,10);
+        if (!itemsByDate[k]) itemsByDate[k] = [];
+        const arr = itemsByDate[k];
+        const idx = arr.findIndex(x => String(x.id) === String(item.id));
+        if (idx >= 0) arr[idx] = item;
+        else arr.push(item);
+        arr.sort((a,b) => (String(a.date).localeCompare(String(b.date)) || (Number(a.id) - Number(b.id))));
+      };
+
+      const removeLocalItem = (dateIso, id) => {
+        const arr = itemsByDate[dateIso] || [];
+        itemsByDate[dateIso] = arr.filter(x => String(x.id) !== String(id));
+      };
+
+      btnPrev.addEventListener('click', () => { view = new Date(view.getFullYear(), view.getMonth() - 1, 1); refreshMonth(); });
+      btnNext.addEventListener('click', () => { view = new Date(view.getFullYear(), view.getMonth() + 1, 1); refreshMonth(); });
+      btnToday.addEventListener('click', () => { const t = new Date(); view = new Date(t.getFullYear(), t.getMonth(), 1); refreshMonth(); });
+
+      btnNew.addEventListener('click', () => setEditorNew());
+      fCount.addEventListener('change', syncRemindIntervalEnabled);
+
+      btnSave.addEventListener('click', async () => {
+        const dateIsoVal = fDate.value;
+        const content = (fContent.value || '').trim();
+        if (!content) { showToast('内容不能为空'); return; }
+        const reminder_group = (fGroup.value || '').trim();
+        const reminder_message = (fReminder.value || '').trim();
+        const remind_anchor_time = (fAnchor.value || '09:00').slice(0, 5);
+        let remind_advance_minutes = parseInt(fAdvance.value, 10);
+        let remind_count_per_day = parseInt(fCount.value, 10);
+        let remind_interval_minutes = parseInt(fInterval.value, 10);
+        if (Number.isNaN(remind_advance_minutes) || remind_advance_minutes < 0 || remind_advance_minutes > 4320) {
+          showToast('提前提醒分钟数须在 0～4320'); return;
+        }
+        if (Number.isNaN(remind_count_per_day) || remind_count_per_day < 1 || remind_count_per_day > 24) {
+          showToast('当日提醒次数须在 1～24'); return;
+        }
+        if (Number.isNaN(remind_interval_minutes) || remind_interval_minutes < 5 || remind_interval_minutes > 1440) {
+          showToast('提醒间隔须在 5～1440 分钟'); return;
+        }
+        const remindPayload = {
+          remind_anchor_time,
+          remind_advance_minutes,
+          remind_count_per_day,
+          remind_interval_minutes
+        };
+        try {
+          if (selectedItemId == null) {
+            const item = await apiCreate({ date: dateIsoVal, content, reminder_group, reminder_message, ...remindPayload });
+            upsertLocalItem(item);
+            rebuildDayList();
+            renderGrid();
+            setEditorEdit(item.id);
+            showToast('已创建');
+          } else {
+            const item = await apiUpdate(selectedItemId, { content, reminder_group, reminder_message, ...remindPayload });
+            upsertLocalItem(item);
+            rebuildDayList();
+            renderGrid();
+            setEditorEdit(item.id);
+            showToast('已保存');
+          }
+        } catch (e) {
+          showToast(e.message || '保存失败');
+        }
+      });
+
+      btnDelete.addEventListener('click', async () => {
+        if (selectedItemId == null) return;
+        if (!confirm('确定删除这条日历项吗？')) return;
+        try {
+          await apiDelete(selectedItemId);
+          removeLocalItem(selectedDateIso, selectedItemId);
+          rebuildDayList();
+          renderGrid();
+          setEditorNew();
+          showToast('已删除');
+        } catch (e) {
+          showToast(e.message || '删除失败');
+        }
+      });
+
+      // init
+      refreshMonth();
+    })();
+  </script>
+</body>
+</html>
+

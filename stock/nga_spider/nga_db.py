@@ -29,6 +29,7 @@ def init_tables():
             _init_tables_sqlite(db)
         else:
             _init_tables_mysql(db)
+        _ensure_nga_thread_prompt_columns(db)
         db.commit()
         logger.info("NGA 数据库表初始化完成")
     except Exception as e:
@@ -83,13 +84,15 @@ def _init_tables_sqlite(db):
     """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS nga_thread_config (
-            tid              INTEGER PRIMARY KEY,
-            name             TEXT    DEFAULT '',
-            watch_author_ids TEXT,
-            message_group_id TEXT    DEFAULT '0',
-            auto_run         INTEGER DEFAULT 1,
-            created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            tid                    INTEGER PRIMARY KEY,
+            name                   TEXT    DEFAULT '',
+            watch_author_ids       TEXT,
+            message_group_id       TEXT    DEFAULT '0',
+            auto_run               INTEGER DEFAULT 1,
+            ai_explain_prompt      TEXT    DEFAULT NULL,
+            author_summary_prompt  TEXT    DEFAULT NULL,
+            created_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -155,15 +158,43 @@ def _init_tables_mysql(db):
     """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS nga_thread_config (
-            tid                 BIGINT      PRIMARY KEY COMMENT '帖子ID',
-            name                VARCHAR(255) DEFAULT '' COMMENT '帖子备注名',
-            watch_author_ids    TEXT        COMMENT '关注的authorId列表，JSON数组',
-            message_group_id    VARCHAR(32) DEFAULT '0' COMMENT '消息群组ID',
-            auto_run            TINYINT(1)  DEFAULT 1 COMMENT '1=程序启动后默认运行监控，0=不自动运行',
-            created_at          TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
-            updated_at          TIMESTAMP   DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            tid                    BIGINT       PRIMARY KEY COMMENT '帖子ID',
+            name                   VARCHAR(255) DEFAULT '' COMMENT '帖子备注名',
+            watch_author_ids       TEXT         COMMENT '关注的authorId列表，JSON数组',
+            message_group_id       VARCHAR(32)  DEFAULT '0' COMMENT '消息群组ID',
+            auto_run               TINYINT(1)   DEFAULT 1 COMMENT '1=程序启动后默认运行监控，0=不自动运行',
+            ai_explain_prompt      TEXT         DEFAULT NULL COMMENT 'AI解释前置提示词',
+            author_summary_prompt  TEXT         DEFAULT NULL COMMENT '时段总结前置提示词',
+            created_at             TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+            updated_at             TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='NGA帖子监控配置';
     """)
+
+
+def _ensure_nga_thread_prompt_columns(db: Database) -> None:
+    """旧库补列：前置提示词存于 nga_thread_config（与帖子配置同表）。"""
+    try:
+        if not db.column_exists("nga_thread_config", "ai_explain_prompt"):
+            if db.is_sqlite:
+                db.execute("ALTER TABLE nga_thread_config ADD COLUMN ai_explain_prompt TEXT DEFAULT NULL")
+            else:
+                db.execute(
+                    "ALTER TABLE nga_thread_config ADD COLUMN ai_explain_prompt TEXT NULL "
+                    "COMMENT 'AI解释前置提示词' AFTER auto_run"
+                )
+    except Exception as e:
+        logger.warning("nga_thread_config 补列 ai_explain_prompt 失败（已忽略）: %s", e)
+    try:
+        if not db.column_exists("nga_thread_config", "author_summary_prompt"):
+            if db.is_sqlite:
+                db.execute("ALTER TABLE nga_thread_config ADD COLUMN author_summary_prompt TEXT DEFAULT NULL")
+            else:
+                db.execute(
+                    "ALTER TABLE nga_thread_config ADD COLUMN author_summary_prompt TEXT NULL "
+                    "COMMENT '时段总结前置提示词' AFTER ai_explain_prompt"
+                )
+    except Exception as e:
+        logger.warning("nga_thread_config 补列 author_summary_prompt 失败（已忽略）: %s", e)
 
 
 # ─────────────────────────── 楼层操作 ───────────────────────────────────────
@@ -574,13 +605,17 @@ def get_floors_by_tid_author(tid: int, author_id: int, limit: int = 5000, offset
 def get_thread_config(tid: int):
     """
     获取单条帖子监控配置，不存在返回 None。
-    返回与 get_thread_configs 中单条结构一致的 dict（含 tid, name, watch_author_ids, message_group_id, auto_run）。
+    返回与 get_thread_configs 中单条结构一致的 dict（含 tid, name, watch_author_ids, message_group_id, auto_run,
+    ai_explain_prompt, author_summary_prompt）。
     """
     db = Database.Create()
     try:
+        _ensure_nga_thread_prompt_columns(db)
         row = db.fetch_one(
-            "SELECT tid, name, watch_author_ids, message_group_id, auto_run FROM nga_thread_config WHERE tid = %s",
-            (tid,)
+            "SELECT tid, name, watch_author_ids, message_group_id, auto_run, "
+            "ai_explain_prompt, author_summary_prompt "
+            "FROM nga_thread_config WHERE tid = %s",
+            (tid,),
         )
         if not row:
             return None
@@ -596,7 +631,46 @@ def get_thread_config(tid: int):
             'watch_author_ids': watch_ids,
             'message_group_id': row.get('message_group_id'),
             'auto_run': bool(row.get('auto_run')),
+            'ai_explain_prompt': row.get('ai_explain_prompt') or '',
+            'author_summary_prompt': row.get('author_summary_prompt') or '',
         }
+    finally:
+        db.close()
+
+
+def update_nga_thread_saved_prompts(
+    tid: int,
+    *,
+    ai_explain_prompt: str | None = None,
+    author_summary_prompt: str | None = None,
+) -> bool:
+    """
+    仅更新帖子的前置提示词字段；未传入的字段不改。
+    传入空字符串表示清空该提示词。至少须提供一个非 None 参数。
+    返回是否执行了 UPDATE（行存在）。
+    """
+    if ai_explain_prompt is None and author_summary_prompt is None:
+        return False
+    db = Database.Create()
+    try:
+        _ensure_nga_thread_prompt_columns(db)
+        parts: list[str] = []
+        vals: list = []
+        if ai_explain_prompt is not None:
+            parts.append("ai_explain_prompt = %s")
+            vals.append(ai_explain_prompt)
+        if author_summary_prompt is not None:
+            parts.append("author_summary_prompt = %s")
+            vals.append(author_summary_prompt)
+        vals.append(int(tid))
+        cur = db.execute(
+            f"UPDATE nga_thread_config SET {', '.join(parts)} WHERE tid = %s",
+            tuple(vals),
+        )
+        return getattr(cur, "rowcount", 0) > 0
+    except Exception as e:
+        logger.error("更新帖子提示词失败 tid=%s: %s", tid, e)
+        return False
     finally:
         db.close()
 
