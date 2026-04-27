@@ -3738,13 +3738,14 @@ def _run_nga_auto_summary_due_tasks_impl() -> None:
 @bp.route('/api/nga_export_author', methods=['GET'])
 def export_nga_author_posts():
     """
-    导出某帖中某作者在日期范围内的所有楼层，组织为文件并下载。
+    导出某帖中某作者的所有楼层，组织为文件并下载。
     参数：
       - tid: int
       - author_id: int
-      - start_date: YYYY-MM-DD
-      - end_date: YYYY-MM-DD（含当天）
-      - format: md|txt（可选，默认 md）
+      - start_date: YYYY-MM-DD（可选；未传时需 all=1）
+      - end_date: YYYY-MM-DD（可选；未传时需 all=1，且按「含当天」语义）
+      - all: 1（可选；为 1 时忽略日期范围，导出全部）
+      - format: csv|md|txt（可选，默认 csv）
     """
     if nga_db is None:
         return jsonify({'success': False, 'message': 'NGA 模块未加载'}), 500
@@ -3753,23 +3754,29 @@ def export_nga_author_posts():
         author_id = request.args.get('author_id', type=int)
         start_date_str = (request.args.get('start_date') or '').strip()
         end_date_str = (request.args.get('end_date') or '').strip()
-        fmt = (request.args.get('format') or 'md').strip().lower()
+        all_flag = (request.args.get('all') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+        fmt = (request.args.get('format') or 'csv').strip().lower()
 
         if not tid or tid < 1:
             return jsonify({'success': False, 'message': '缺少或无效参数 tid'}), 400
         if not author_id or author_id < 1:
             return jsonify({'success': False, 'message': '缺少或无效参数 author_id'}), 400
-        if not start_date_str or not end_date_str:
-            return jsonify({'success': False, 'message': '缺少参数 start_date 或 end_date'}), 400
-        try:
-            start_d = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-            end_d = datetime.strptime(end_date_str, "%Y-%m-%d").date()
-        except Exception:
-            return jsonify({'success': False, 'message': '日期格式必须为 YYYY-MM-DD'}), 400
-        if start_d > end_d:
-            return jsonify({'success': False, 'message': 'start_date 不能晚于 end_date'}), 400
-        if fmt not in ('md', 'txt'):
-            fmt = 'md'
+
+        start_d = None
+        end_d = None
+        if not all_flag:
+            if not start_date_str or not end_date_str:
+                return jsonify({'success': False, 'message': '缺少参数 start_date 或 end_date（或设置 all=1 导出全部）'}), 400
+            try:
+                start_d = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+                end_d = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+            except Exception:
+                return jsonify({'success': False, 'message': '日期格式必须为 YYYY-MM-DD'}), 400
+            if start_d > end_d:
+                return jsonify({'success': False, 'message': 'start_date 不能晚于 end_date'}), 400
+
+        if fmt not in ('csv', 'md', 'txt'):
+            fmt = 'csv'
 
         thread = nga_db.get_thread_config(tid)
         thread_name = (thread or {}).get('name') or f"tid={tid}"
@@ -3778,13 +3785,16 @@ def export_nga_author_posts():
         selected = []
         for f in floors:
             dt = _parse_nga_post_datetime(f.get('post_date') or '')
-            if dt is None:
-                continue
-            d = dt.date()
-            if start_d <= d <= end_d:
+            if all_flag:
                 selected.append((dt, f))
+            else:
+                if dt is None:
+                    continue
+                d = dt.date()
+                if start_d <= d <= end_d:
+                    selected.append((dt, f))
 
-        selected.sort(key=lambda x: (x[0], x[1].get('floor_num', 0)))
+        selected.sort(key=lambda x: ((x[0] or datetime.min), x[1].get('floor_num', 0)))
 
         author_name = ''
         for _, f in selected:
@@ -3794,7 +3804,54 @@ def export_nga_author_posts():
 
         title = f"NGA 导出：{thread_name}（tid={tid}）"
         subtitle = f"作者 uid={author_id}" + (f"（{author_name}）" if author_name else "")
-        range_line = f"日期范围：{start_d.isoformat()} ~ {end_d.isoformat()}"
+        range_line = "日期范围：全部" if all_flag else f"日期范围：{start_d.isoformat()} ~ {end_d.isoformat()}"
+
+        if fmt == 'csv':
+            import csv
+            import io
+
+            buf = io.StringIO(newline='')
+            w = csv.writer(buf)
+            w.writerow([
+                "thread_name",
+                "tid",
+                "author_id",
+                "author_name",
+                "floor_num",
+                "pid",
+                "post_datetime",
+                "post_date_raw",
+                "content_text",
+                "quote_text",
+                "score",
+                "created_at",
+            ])
+            for dt, f in selected:
+                post_dt = dt.strftime('%Y-%m-%d %H:%M:%S') if dt else ''
+                w.writerow([
+                    thread_name,
+                    tid,
+                    author_id,
+                    f.get('author_name') or author_name,
+                    f.get('floor_num'),
+                    f.get('pid'),
+                    post_dt,
+                    f.get('post_date') or '',
+                    (f.get('content_text') or '').replace('\r\n', '\n').replace('\r', '\n'),
+                    (f.get('quote_text') or '').replace('\r\n', '\n').replace('\r', '\n'),
+                    f.get('score', 0),
+                    f.get('created_at') or '',
+                ])
+
+            content = buf.getvalue().encode("utf-8-sig")
+            suffix = "csv"
+            if all_flag:
+                filename = f"nga_tid{tid}_uid{author_id}_all.csv"
+            else:
+                filename = f"nga_tid{tid}_uid{author_id}_{start_d.isoformat()}_{end_d.isoformat()}.csv"
+            resp = Response(content, mimetype="text/csv; charset=utf-8")
+            resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+            return resp
 
         lines = []
         if fmt == 'md':
@@ -3804,7 +3861,8 @@ def export_nga_author_posts():
             lines.append(f"- {range_line}")
             lines.append("")
             for dt, f in selected:
-                lines.append(f"## #{f['floor_num']} (pid={f['pid']})  {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                dt_text = dt.strftime('%Y-%m-%d %H:%M:%S') if dt else (f.get('post_date') or '')
+                lines.append(f"## #{f['floor_num']} (pid={f['pid']})  {dt_text}")
                 text = (f.get('content_text') or '').strip()
                 if not text:
                     text = "(无内容)"
@@ -3817,14 +3875,18 @@ def export_nga_author_posts():
             lines.append(range_line)
             lines.append("")
             for dt, f in selected:
-                lines.append(f"[#{f['floor_num']}] pid={f['pid']} {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                dt_text = dt.strftime('%Y-%m-%d %H:%M:%S') if dt else (f.get('post_date') or '')
+                lines.append(f"[#{f['floor_num']}] pid={f['pid']} {dt_text}")
                 text = (f.get('content_text') or '').strip()
                 lines.append(text if text else "(无内容)")
                 lines.append("")
 
         content = "\n".join(lines).encode("utf-8")
         suffix = "md" if fmt == "md" else "txt"
-        filename = f"nga_tid{tid}_uid{author_id}_{start_d.isoformat()}_{end_d.isoformat()}.{suffix}"
+        if all_flag:
+            filename = f"nga_tid{tid}_uid{author_id}_all.{suffix}"
+        else:
+            filename = f"nga_tid{tid}_uid{author_id}_{start_d.isoformat()}_{end_d.isoformat()}.{suffix}"
 
         resp = Response(content, mimetype="text/plain; charset=utf-8")
         resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'

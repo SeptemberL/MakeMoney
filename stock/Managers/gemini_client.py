@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import logging
 import time
+import atexit
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -11,6 +13,48 @@ import requests
 from config import Config
 
 logger = logging.getLogger(__name__)
+
+_REQ_LOCK = threading.Lock()
+_REQ_TOTAL = 0
+
+
+def _next_request_no() -> int:
+    """
+    Gemini 实际发出 HTTP 请求的全局序号（进程内）。
+    注意：重试也算一次实际请求。
+    """
+    global _REQ_TOTAL
+    with _REQ_LOCK:
+        _REQ_TOTAL += 1
+        return _REQ_TOTAL
+
+
+def get_gemini_request_total() -> int:
+    """获取当前进程内 Gemini 实际发出 HTTP request 总数。"""
+    with _REQ_LOCK:
+        return int(_REQ_TOTAL)
+
+
+def _clip_for_log(s: Optional[str], *, limit: int = 20000) -> str:
+    v = "" if s is None else str(s)
+    if limit <= 0:
+        return v
+    if len(v) <= limit:
+        return v
+    return v[:limit] + f"\n...[已截断：原始长度={len(v)}，上限={limit}]"
+
+
+def _log_total_at_exit() -> None:
+    try:
+        total = get_gemini_request_total()
+        if total > 0:
+            logger.info("Gemini 本进程累计 request 总数 total_requests=%s", total)
+    except Exception:
+        # 避免退出阶段因日志/锁问题影响进程退出
+        return
+
+
+atexit.register(_log_total_at_exit)
 
 
 class GeminiError(RuntimeError):
@@ -140,6 +184,7 @@ class GeminiClient:
         start = time.time()
         while True:
             attempt += 1
+            req_no = _next_request_no()
             try:
                 resp = requests.post(
                     url,
@@ -152,12 +197,29 @@ class GeminiClient:
                     self._sleep_backoff(attempt)
                     if attempt <= (self._max_retries + 1):
                         continue
+                logger.warning(
+                    "Gemini 请求超时 model=%s attempt=%s/%s req_no=%s total_requests=%s",
+                    self._model,
+                    attempt,
+                    self._max_retries + 1,
+                    req_no,
+                    get_gemini_request_total(),
+                )
                 raise GeminiTransientError("Gemini 请求超时") from e
             except requests.RequestException as e:
                 if attempt <= (self._max_retries + 1):
                     self._sleep_backoff(attempt)
                     if attempt <= (self._max_retries + 1):
                         continue
+                logger.warning(
+                    "Gemini 网络请求失败 model=%s attempt=%s/%s err=%s req_no=%s total_requests=%s",
+                    self._model,
+                    attempt,
+                    self._max_retries + 1,
+                    type(e).__name__,
+                    req_no,
+                    get_gemini_request_total(),
+                )
                 raise GeminiTransientError(f"Gemini 网络请求失败: {type(e).__name__}") from e
 
             status = int(getattr(resp, "status_code", 0) or 0)
@@ -165,29 +227,57 @@ class GeminiClient:
 
             if status in (401, 403):
                 logger.warning(
-                    "Gemini 鉴权失败 status=%s model=%s api_key=%s elapsed_ms=%s",
+                    "Gemini 鉴权失败 status=%s model=%s api_key=%s elapsed_ms=%s req_no=%s total_requests=%s",
                     status,
                     self._model,
                     _mask_secret(self._api_key),
                     elapsed_ms,
+                    req_no,
+                    get_gemini_request_total(),
                 )
                 raise GeminiAuthError(f"Gemini 鉴权失败 status={status}")
 
             if status == 429 or status >= 500:
+                if status == 429:
+                    logger.warning(
+                        "Gemini 命中 429（限流）：请复制下方内容到 AI 手动执行\n"
+                        "model=%s attempt=%s/%s elapsed_ms=%s req_no=%s total_requests=%s\n"
+                        "----- system_instruction -----\n%s\n"
+                        "----- prompt -----\n%s\n"
+                        "------------------------------",
+                        self._model,
+                        attempt,
+                        self._max_retries + 1,
+                        elapsed_ms,
+                        req_no,
+                        get_gemini_request_total(),
+                        _clip_for_log(system_instruction),
+                        _clip_for_log(text),
+                    )
                 if attempt <= (self._max_retries + 1):
                     logger.info(
-                        "Gemini 可重试错误 status=%s model=%s attempt=%s/%s elapsed_ms=%s",
+                        "Gemini 可重试错误 status=%s model=%s attempt=%s/%s elapsed_ms=%s req_no=%s total_requests=%s",
                         status,
                         self._model,
                         attempt,
                         self._max_retries + 1,
                         elapsed_ms,
+                        req_no,
+                        get_gemini_request_total(),
                     )
                     self._sleep_backoff(attempt)
                     continue
                 raise GeminiTransientError(f"Gemini 服务端错误 status={status}")
 
             if status and status >= 400:
+                logger.info(
+                    "Gemini 请求失败 status=%s model=%s elapsed_ms=%s req_no=%s total_requests=%s",
+                    status,
+                    self._model,
+                    elapsed_ms,
+                    req_no,
+                    get_gemini_request_total(),
+                )
                 raise GeminiRequestError(f"Gemini 请求失败 status={status}")
 
             try:
@@ -197,9 +287,11 @@ class GeminiClient:
 
             out = _extract_text(data)
             logger.info(
-                "Gemini 调用成功 model=%s elapsed_ms=%s",
+                "Gemini 调用成功 model=%s elapsed_ms=%s req_no=%s total_requests=%s",
                 self._model,
                 elapsed_ms,
+                req_no,
+                get_gemini_request_total(),
             )
             return GeminiCallResult(text=out, raw=data)
 

@@ -63,6 +63,24 @@ class TestGeminiClient(unittest.TestCase):
             with self.assertRaises(GeminiTransientError):
                 c.generate_text("hi")
 
+    def test_429_logs_prompt_for_manual_retry(self):
+        c = GeminiClient(api_key="k", model="m", timeout_seconds=1, max_retries=0)
+        seq = [
+            _Resp(429, {"error": "rate limited"}),
+            _Resp(429, {"error": "rate limited"}),
+        ]
+        with patch("Managers.gemini_client.time.sleep", return_value=None):
+            with patch("Managers.gemini_client.requests.post", side_effect=seq):
+                with self.assertLogs("Managers.gemini_client", level="WARNING") as cm:
+                    with self.assertRaises(GeminiTransientError):
+                        c.generate_text("PROMPT_429", system_instruction="SYS_429")
+        out = "\n".join(cm.output)
+        self.assertIn("Gemini 命中 429（限流）", out)
+        self.assertIn("----- system_instruction -----", out)
+        self.assertIn("SYS_429", out)
+        self.assertIn("----- prompt -----", out)
+        self.assertIn("PROMPT_429", out)
+
 
 if __name__ == "__main__":
     unittest.main()

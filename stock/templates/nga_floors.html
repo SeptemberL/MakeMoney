@@ -641,11 +641,25 @@
 
         function openExportModal(authorId, authorName) {
             document.getElementById('exportAuthorId').value = String(authorId || '');
+            var sel = document.getElementById('exportAuthorSelect');
+            if (sel) sel.value = String(authorId || '');
             document.getElementById('exportAuthorName').textContent = authorName ? ('作者：' + authorName) : '';
             document.getElementById('exportStartDate').value = '';
             document.getElementById('exportEndDate').value = '';
-            document.getElementById('exportFormat').value = 'md';
+            document.getElementById('exportAll').checked = true;
+            document.getElementById('exportFormat').value = 'csv';
+            toggleExportAllUi();
             exportModal.show();
+        }
+
+        function toggleExportAllUi() {
+            var all = document.getElementById('exportAll');
+            var start = document.getElementById('exportStartDate');
+            var end = document.getElementById('exportEndDate');
+            if (!all || !start || !end) return;
+            var disabled = !!all.checked;
+            start.disabled = disabled;
+            end.disabled = disabled;
         }
 
         function doExport() {
@@ -653,24 +667,28 @@
             const startDate = (document.getElementById('exportStartDate').value || '').trim();
             const endDate = (document.getElementById('exportEndDate').value || '').trim();
             const format = (document.getElementById('exportFormat').value || 'md').trim();
+            const exportAll = !!(document.getElementById('exportAll') && document.getElementById('exportAll').checked);
 
             if (!authorId) {
                 alert('请填写说话人 ID');
                 return;
             }
-            if (!startDate || !endDate) {
-                alert('请选择开始/结束日期');
+            if (!exportAll && (!startDate || !endDate)) {
+                alert('请选择开始/结束日期，或勾选「导出全部」');
                 return;
             }
 
             const url = '/api/nga_export_author'
                 + '?tid=' + encodeURIComponent(String(TID))
                 + '&author_id=' + encodeURIComponent(authorId)
-                + '&start_date=' + encodeURIComponent(startDate)
-                + '&end_date=' + encodeURIComponent(endDate)
                 + '&format=' + encodeURIComponent(format);
+            const url2 = exportAll
+                ? (url + '&all=1')
+                : (url
+                    + '&start_date=' + encodeURIComponent(startDate)
+                    + '&end_date=' + encodeURIComponent(endDate));
 
-            window.location.href = url;
+            window.location.href = url2;
             exportModal.hide();
         }
 
@@ -684,6 +702,13 @@
             }
             loadFloors();
             exportModal = new bootstrap.Modal(document.getElementById('exportModal'));
+            var exportSel = document.getElementById('exportAuthorSelect');
+            if (exportSel) {
+                exportSel.addEventListener('change', function() {
+                    var v = (exportSel.value || '').trim();
+                    if (v) document.getElementById('exportAuthorId').value = v;
+                });
+            }
             var aiEl = document.getElementById('aiExplainModal');
             if (aiEl) {
                 aiExplainModal = new bootstrap.Modal(aiEl);
@@ -691,6 +716,11 @@
             var sdEl = document.getElementById('authorDaySummaryModal');
             if (sdEl) {
                 authorDaySummaryModal = new bootstrap.Modal(sdEl);
+            }
+
+            var expAll = document.getElementById('exportAll');
+            if (expAll) {
+                expAll.addEventListener('change', toggleExportAllUi);
             }
         });
     </script>
@@ -705,6 +735,17 @@
                 </div>
                 <div class="modal-body">
                     <div class="text-muted small mb-2" id="exportAuthorName"></div>
+                    {% if watch_authors %}
+                    <div class="mb-2">
+                        <label class="form-label">从关注作者中选择</label>
+                        <select class="form-select" id="exportAuthorSelect">
+                            <option value="">（可选）</option>
+                            {% for wa in watch_authors or [] %}
+                            <option value="{{ wa.author_id }}">{% if wa.forum_name %}{{ wa.forum_name }}（uid: {{ wa.author_id }}）{% else %}uid: {{ wa.author_id }}（暂无昵称）{% endif %}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    {% endif %}
                     <div class="mb-3">
                         <label class="form-label">说话人 ID (uid)</label>
                         <input type="number" class="form-control" id="exportAuthorId" min="1" placeholder="例如 150058" />
@@ -719,15 +760,20 @@
                             <input type="date" class="form-control" id="exportEndDate" />
                         </div>
                     </div>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="exportAll" checked />
+                        <label class="form-check-label" for="exportAll">导出全部（忽略日期范围）</label>
+                    </div>
                     <div class="mt-3">
                         <label class="form-label">导出格式</label>
                         <select class="form-select" id="exportFormat">
+                            <option value="csv">CSV (.csv)</option>
                             <option value="md">Markdown (.md)</option>
                             <option value="txt">文本 (.txt)</option>
                         </select>
                     </div>
                     <div class="form-text mt-2">
-                        将从已抓取的楼层中筛选该作者在所选日期范围内的发言并导出（不触发额外抓取）。
+                        将从已抓取的楼层中筛选该作者发言并导出（不触发额外抓取）。选择 CSV 时建议勾选「导出全部」以导出该 UID 在本帖的完整对话。
                     </div>
                 </div>
                 <div class="modal-footer">
