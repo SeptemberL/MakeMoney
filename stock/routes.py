@@ -100,6 +100,126 @@ sendAllMessage = ""
 config = Config()
 
 
+def _ensure_portfolio_row(db: Database, user_id: int) -> None:
+    """确保 portfolio 表中存在当前用户行（幂等）。"""
+    uid = int(user_id)
+    row = db.fetch_one("SELECT id FROM portfolio WHERE user_id = %s LIMIT 1", (uid,))
+    if row:
+        return
+    db.execute(
+        "INSERT INTO portfolio (user_id, total_capital, available_cash, market_value) VALUES (%s, %s, %s, %s)",
+        (uid, 0.0, 0.0, 0.0),
+    )
+
+
+def _get_portfolio(db: Database, user_id: int) -> dict:
+    """读取当前用户 portfolio（不存在则自动创建并返回默认值）。"""
+    _ensure_portfolio_row(db, user_id)
+    uid = int(user_id)
+    row = db.fetch_one(
+        "SELECT user_id, total_capital, available_cash, market_value, updated_at FROM portfolio WHERE user_id = %s LIMIT 1",
+        (uid,),
+    )
+    if not row:
+        return {"user_id": uid, "total_capital": 0.0, "available_cash": 0.0, "market_value": 0.0, "updated_at": None}
+    return {
+        "user_id": uid,
+        "total_capital": float(row.get("total_capital") or 0),
+        "available_cash": float(row.get("available_cash") or 0),
+        "market_value": float(row.get("market_value") or 0),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _set_portfolio_cash(db: Database, user_id: int, *, mode: str, value: float) -> dict:
+    """调整可用资金：mode=set|delta。返回更新后的 portfolio dict。"""
+    uid = int(user_id)
+    _ensure_portfolio_row(db, uid)
+    m = (mode or "set").strip().lower()
+    if m not in ("set", "delta"):
+        raise ValueError("mode 只能为 set 或 delta")
+    v = float(value)
+    if m == "set":
+        new_cash = v
+    else:
+        cur = db.fetch_one("SELECT available_cash FROM portfolio WHERE user_id = %s LIMIT 1", (uid,))
+        cur_cash = float((cur or {}).get("available_cash") or 0)
+        new_cash = cur_cash + v
+    db.execute(
+        "UPDATE portfolio SET available_cash = %s, updated_at = CURRENT_TIMESTAMP WHERE user_id = %s",
+        (float(new_cash), uid),
+    )
+    return _get_portfolio(db, uid)
+
+
+def _maybe_update_portfolio_market_value(db: Database, user_id: int) -> dict:
+    """用数据库中最新 close 估算 market_value，并写回 portfolio。"""
+    uid = int(user_id)
+    _ensure_portfolio_row(db, uid)
+    rows = db.fetch_all(
+        "SELECT stock_code, quantity FROM positions WHERE user_id = %s",
+        (uid,),
+    ) or []
+    codes = [str(r.get("stock_code") or "").strip() for r in rows if str(r.get("stock_code") or "").strip()]
+    if not codes:
+        db.execute(
+            "UPDATE portfolio SET market_value = %s, updated_at = CURRENT_TIMESTAMP WHERE user_id = %s",
+            (0.0, uid),
+        )
+        return _get_portfolio(db, uid)
+    close_map = db.get_latest_daily_close_map(codes)
+    mv = 0.0
+    for r in rows:
+        sc = str(r.get("stock_code") or "").strip()
+        if not sc:
+            continue
+        qty = float(r.get("quantity") or 0)
+        close_row = close_map.get(sc)
+        if not close_row:
+            continue
+        try:
+            px = float(close_row.get("close"))
+        except Exception:
+            continue
+        mv += qty * px
+    db.execute(
+        "UPDATE portfolio SET market_value = %s, updated_at = CURRENT_TIMESTAMP WHERE user_id = %s",
+        (float(mv), uid),
+    )
+    return _get_portfolio(db, uid)
+
+
+def _sparkline(values: list[float], *, width: int = 60) -> str:
+    """把价格序列编码成单行文本图（sparkline）。"""
+    blocks = "▁▂▃▄▅▆▇█"
+    if not values:
+        return ""
+    w = int(width) if width is not None else 60
+    if w <= 0:
+        w = 60
+    n = len(values)
+    if n <= w:
+        sampled = values
+    else:
+        # 等距采样到 width 个点
+        step = (n - 1) / float(w - 1)
+        sampled = [values[int(round(i * step))] for i in range(w)]
+    vmin = min(sampled)
+    vmax = max(sampled)
+    if vmax <= vmin:
+        return blocks[0] * len(sampled)
+    out = []
+    for v in sampled:
+        t = (v - vmin) / (vmax - vmin)
+        idx = int(round(t * (len(blocks) - 1)))
+        if idx < 0:
+            idx = 0
+        if idx >= len(blocks):
+            idx = len(blocks) - 1
+        out.append(blocks[idx])
+    return "".join(out)
+
+
 def _test_trigger_runtime_state(signal_type: SingleType) -> dict:
     """测试触发时不读库；到价提醒用空状态以便当次条件满足即可发一条。"""
     if signal_type == SingleType.PRICE_LEVEL_INTERVAL:
@@ -1435,6 +1555,206 @@ def positions_page():
     return render_template('positions.html', positions=positions)
 
 
+@bp.route("/api/portfolio", methods=["GET"])
+def api_portfolio_get():
+    """读取当前登录用户的组合资金概览（available_cash 等）。"""
+    not_logged_in = _require_login_json()
+    if not_logged_in:
+        return not_logged_in
+    db = Database.Create()
+    try:
+        p = _get_portfolio(db, int(session["user_id"]))
+        return jsonify({"success": True, "portfolio": p})
+    except Exception as e:
+        logger.error("读取 portfolio 失败: %s", e, exc_info=True)
+        return jsonify({"success": False, "message": "服务器内部错误"}), 500
+    finally:
+        db.close()
+
+
+@bp.route("/api/portfolio/adjust_cash", methods=["POST"])
+def api_portfolio_adjust_cash():
+    """调整剩余资金（available_cash），支持 set/delta。"""
+    not_logged_in = _require_login_json()
+    if not_logged_in:
+        return not_logged_in
+    payload = request.get_json(silent=True) or {}
+    mode = (payload.get("mode") or "set").strip().lower()
+    if "value" not in payload:
+        return jsonify({"success": False, "message": "缺少 value"}), 400
+    try:
+        value = float(payload.get("value"))
+    except Exception:
+        return jsonify({"success": False, "message": "value 必须为数值"}), 400
+    db = Database.Create()
+    try:
+        db.begin_transaction()
+        p = _set_portfolio_cash(db, int(session["user_id"]), mode=mode, value=value)
+        db.commit()
+        return jsonify({"success": True, "portfolio": p})
+    except ValueError as ve:
+        db.rollback()
+        return jsonify({"success": False, "message": str(ve)}), 400
+    except Exception as e:
+        db.rollback()
+        logger.error("调整 portfolio.available_cash 失败: %s", e, exc_info=True)
+        return jsonify({"success": False, "message": "服务器内部错误"}), 500
+    finally:
+        db.close()
+
+
+@bp.route("/api/positions/export_ai_txt", methods=["GET"])
+def api_positions_export_ai_txt():
+    """导出当前全部持仓的 AI 询问用 txt（含文本图表）。"""
+    not_logged_in = _require_login_json()
+    if not_logged_in:
+        return not_logged_in
+
+    try:
+        days = int(float((request.args.get("days") or "90").strip()))
+    except Exception:
+        days = 90
+    if days < 10:
+        days = 10
+    if days > 365:
+        days = 365
+
+    try:
+        width = int(float((request.args.get("width") or "60").strip()))
+    except Exception:
+        width = 60
+    if width < 20:
+        width = 20
+    if width > 120:
+        width = 120
+
+    uid = int(session["user_id"])
+    db = Database.Create()
+    try:
+        # 组合概览
+        port = _get_portfolio(db, uid)
+        # 持仓（带 current_price/total_value 计算）
+        positions = _get_positions_with_market(uid) or []
+
+        # 为图表准备：读取每只票近 N 日 close
+        charts: dict[str, dict] = {}
+        for p in positions:
+            sc = str(p.get("stock_code") or "").strip()
+            if not sc:
+                continue
+            base = sc.split(".", 1)[0].strip()
+            try:
+                table = Database.stock_table_name_for_code(base)
+            except Exception:
+                continue
+            if not db.table_exists(table):
+                charts[sc] = {"table": table, "dates": [], "closes": [], "spark": ""}
+                continue
+            rows = db.fetch_all(
+                f"SELECT trade_date, close FROM {table} ORDER BY trade_date DESC LIMIT {int(days)}"
+            ) or []
+            rows = list(reversed(rows))
+            ds = []
+            cs = []
+            for r in rows:
+                td = r.get("trade_date")
+                cv = r.get("close")
+                if td is None or cv is None:
+                    continue
+                try:
+                    ds.append(str(td)[:10])
+                    cs.append(float(cv))
+                except Exception:
+                    continue
+            charts[sc] = {
+                "table": table,
+                "dates": ds,
+                "closes": cs,
+                "spark": _sparkline(cs, width=width),
+            }
+
+        # 生成 txt
+        now_s = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        lines: list[str] = []
+        lines.append("【持仓咨询材料（请直接发给 AI）】")
+        lines.append(f"导出时间: {now_s}")
+        lines.append("")
+        lines.append("【组合概览】")
+        lines.append(f"- 可用现金(available_cash): {port.get('available_cash', 0):.2f}")
+        lines.append(f"- 总资金(total_capital): {port.get('total_capital', 0):.2f}")
+        lines.append(f"- 持仓市值(market_value): {port.get('market_value', 0):.2f}")
+        lines.append("")
+        lines.append("【当前持仓列表】")
+        if not positions:
+            lines.append("(暂无持仓)")
+        for i, p in enumerate(positions, start=1):
+            sc = str(p.get("stock_code") or "").strip()
+            nm = str(p.get("stock_name") or "").strip()
+            qty = float(p.get("quantity") or 0)
+            cost = float(p.get("cost_price") or 0)
+            cur = p.get("current_price", None)
+            cur_f = None
+            try:
+                cur_f = float(cur) if cur is not None else None
+            except Exception:
+                cur_f = None
+            mv = None
+            pnl = None
+            pnl_pct = None
+            if cur_f is not None:
+                mv = cur_f * qty
+                pnl = (cur_f - cost) * qty
+                if cost > 0:
+                    pnl_pct = ((cur_f - cost) / cost) * 100.0
+
+            lines.append(f"{i}. {nm} {sc}".strip())
+            lines.append(f"   - 持仓数量: {qty:.2f}")
+            lines.append(f"   - 成本价: {cost:.3f}")
+            lines.append(f"   - 当前价(最新close): {(cur_f if cur_f is not None else 'NA')}")
+            if pnl is not None:
+                lines.append(f"   - 浮盈浮亏: {pnl:.2f} ({(pnl_pct if pnl_pct is not None else 'NA')})")
+            if mv is not None:
+                lines.append(f"   - 当前市值: {mv:.2f}")
+
+            ch = charts.get(sc) or charts.get(sc.split(".", 1)[0]) or {}
+            spark = ch.get("spark") or ""
+            closes = ch.get("closes") or []
+            dates = ch.get("dates") or []
+            if spark and closes:
+                lines.append(f"   - 近{len(closes)}日收盘价文本图: {spark}")
+                try:
+                    lines.append(f"     起止: {dates[0]} -> {dates[-1]}")
+                    lines.append(f"     区间: min={min(closes):.3f} max={max(closes):.3f} last={closes[-1]:.3f}")
+                except Exception:
+                    pass
+            else:
+                lines.append("   - 近N日图表: (无可用历史数据，可能尚未同步该标的日线数据)")
+            lines.append("")
+
+        lines.append("【请 AI 输出建议的要求】")
+        lines.append("1) 给出每个标的：继续持有/减仓/加仓/清仓的理由（结合当前盈亏、近期趋势、风险）。")
+        lines.append("2) 给出组合层面：仓位结构、单票集中度、现金比例建议。")
+        lines.append("3) 给出可执行的分批计划：触发条件（价位/时间/信号）与每次调整比例。")
+        lines.append("4) 风险提示：最大回撤控制、止损止盈、事件风险。")
+        lines.append("")
+        lines.append("（注：以上数据为本地记录与数据库最新 close 估算，非实时成交价；仅供辅助决策。）")
+
+        body = "\n".join(lines)
+        fname = f"positions_ai_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        return Response(
+            body,
+            mimetype="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{fname}"',
+            },
+        )
+    except Exception as e:
+        logger.error("导出持仓 AI txt 失败: %s", e, exc_info=True)
+        return jsonify({"success": False, "message": "服务器内部错误"}), 500
+    finally:
+        db.close()
+
+
 
 @bp.route('/watchlist')
 def watchlist_page():
@@ -1779,6 +2099,7 @@ def position_trade_page():
     fee = form.get('fee', 0)
     trade_date = form.get('trade_date')
     next_target = form.get('next', 'positions').strip() or 'positions'
+    sync_cash = str(form.get("sync_cash") or "").strip().lower() in ("1", "true", "yes", "on")
 
     error_message = None
 
@@ -1838,6 +2159,7 @@ def position_trade_page():
             quantity=quantity,
             fee=fee,
             trade_date=trade_date,
+            sync_cash=sync_cash,
         )
         db.commit()
     except ValueError as ve:
@@ -1873,9 +2195,19 @@ def position_trade_page():
     return redirect(url_for('main.positions_page'))
 
 
-def _apply_position_trade(db, user_id: int, stock_code: str, stock_name: str, action: str,
-                          price: float, quantity: float, fee: float,
-                          trade_date: str):
+def _apply_position_trade(
+    db,
+    user_id: int,
+    stock_code: str,
+    stock_name: str,
+    action: str,
+    price: float,
+    quantity: float,
+    fee: float,
+    trade_date: str,
+    *,
+    sync_cash: bool = False,
+):
     """在一个已打开的 db 连接上应用一笔买入/卖出，并写入 transactions 与更新 positions（按 user_id 隔离）。"""
     uid = int(user_id)
     # 写入交易流水
@@ -1936,6 +2268,20 @@ def _apply_position_trade(db, user_id: int, stock_code: str, stock_name: str, ac
     else:
         raise ValueError('未知的操作类型')
 
+    # 可选：同步资金账户（极简模式默认不校验资金，只做记账）
+    if sync_cash:
+        _ensure_portfolio_row(db, uid)
+        # 买入：减少现金（含手续费）；卖出：增加现金（扣手续费）
+        delta = 0.0
+        if action == "buy":
+            delta = -(float(price) * float(quantity) + float(fee or 0))
+        elif action == "sell":
+            delta = float(price) * float(quantity) - float(fee or 0)
+        if abs(delta) > 0:
+            _set_portfolio_cash(db, uid, mode="delta", value=delta)
+        # 同步一下市值（用于导出/展示）
+        _maybe_update_portfolio_market_value(db, uid)
+
 
 @bp.route('/api/positions/trade', methods=['POST'])
 def api_position_trade():
@@ -1954,6 +2300,7 @@ def api_position_trade():
     quantity = data.get('quantity')
     fee = data.get('fee') or 0
     trade_date = data.get('trade_date')
+    sync_cash = bool(data.get("sync_cash")) if "sync_cash" in data else False
 
     if asset_type not in ('stock', 'etf'):
         return jsonify({'success': False, 'message': 'asset_type 只能为 stock 或 etf'}), 400
@@ -1995,6 +2342,7 @@ def api_position_trade():
             quantity=quantity,
             fee=fee,
             trade_date=trade_date,
+            sync_cash=sync_cash,
         )
         db.commit()
         return jsonify({'success': True})
@@ -3532,6 +3880,8 @@ def _execute_nga_author_range_summary(
     end_dt: datetime,
     group_id: str,
     extra_prompt: str,
+    *,
+    task_id: int | None = None,
 ) -> dict:
     """
     执行关注作者时段总结并发送。返回 dict:
@@ -3628,7 +3978,38 @@ def _execute_nga_author_range_summary(
         )
     except GeminiAuthError as e:
         return {'ok': False, 'message': str(e), 'http_status': 401}
-    except (GeminiRequestError, GeminiTransientError) as e:
+    except GeminiTransientError as e:
+        # 429：限流回退 —— 把“当日材料”落库，供页面弹窗浏览/复制给 AI
+        st = getattr(e, "status_code", None)
+        if st == 429:
+            cache_text = (
+                f"[NGA·时段总结·429回退] tid={tid} uid={author_id} "
+                f"{start_dt.strftime('%Y-%m-%d %H:%M')} ~ {end_dt.strftime('%Y-%m-%d %H:%M')}（左闭右开）\n"
+                f"{'─' * 24}\n"
+                f"【system_instruction】\n{system_instruction}\n\n"
+                f"【prompt】\n{prompt}\n"
+            )
+            db_cache = Database.Create()
+            try:
+                db_cache.upsert_nga_author_daily_summary_cache(
+                    task_id=int(task_id or 0),
+                    tid=int(tid),
+                    author_id=int(author_id),
+                    summary_date=end_dt.date().isoformat(),
+                    data=cache_text,
+                    http_status=429,
+                )
+            except Exception as ee:
+                logger.warning("429 回退缓存落库失败: %s", ee, exc_info=True)
+            finally:
+                db_cache.close()
+            return {
+                "ok": False,
+                "message": "Gemini 命中 429（限流）。已将当日总结材料写入数据库，可在帖子页弹窗中查看/复制。",
+                "http_status": 429,
+            }
+        return {"ok": False, "message": str(e), "http_status": 502}
+    except GeminiRequestError as e:
         return {'ok': False, 'message': str(e), 'http_status': 502}
 
     ai_text = (result.text or '').strip()
@@ -3711,20 +4092,31 @@ def _run_nga_auto_summary_due_tasks_impl() -> None:
             end_dt=end_dt,
             group_id=gid,
             extra_prompt=extra,
+            task_id=task_id,
         )
-        if out.get('ok'):
+        # 规则：若命中 429 且已将 prompt 落库，则视为“本次任务已完成”，今天不再重试
+        done_today = bool(out.get("ok")) or int(out.get("http_status") or 0) == 429
+        if done_today:
             db2 = Database.Create()
             try:
                 db2.update_nga_auto_summary_task_last_run(task_id, now)
             finally:
                 db2.close()
-            logger.info(
-                "NGA 自动时段总结已执行 task_id=%s tid=%s author=%s reply_count=%s",
-                task_id,
-                tid,
-                author_id,
-                out.get('reply_count'),
-            )
+            if out.get("ok"):
+                logger.info(
+                    "NGA 自动时段总结已执行 task_id=%s tid=%s author=%s reply_count=%s",
+                    task_id,
+                    tid,
+                    author_id,
+                    out.get('reply_count'),
+                )
+            else:
+                logger.warning(
+                    "NGA 自动时段总结命中 429：已落库并标记今日完成 task_id=%s tid=%s author=%s",
+                    task_id,
+                    tid,
+                    author_id,
+                )
         else:
             logger.warning(
                 "NGA 自动时段总结未成功 task_id=%s tid=%s author=%s: %s",
@@ -4180,6 +4572,7 @@ def nga_author_daily_summary(tid: int):
             end_dt=end_dt,
             group_id=str(group_id or '').strip(),
             extra_prompt=extra_prompt,
+            task_id=None,
         )
         if not out.get('ok'):
             return jsonify({'success': False, 'message': out.get('message')}), int(out.get('http_status') or 500)
@@ -4346,6 +4739,52 @@ def delete_nga_auto_summary_task_api(tid: int, task_id: int):
     except Exception as e:
         logger.error(f'删除 NGA 自动总结任务失败: {e}', exc_info=True)
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@bp.route('/api/nga_floors/<int:tid>/auto_summary_tasks/<int:task_id>/daily_summaries', methods=['GET'])
+def list_nga_auto_summary_task_daily_summaries_api(tid: int, task_id: int):
+    """列出某自动总结任务（id=task_id）的每日总结缓存（429 回退材料）。"""
+    if nga_db is None:
+        return jsonify({"success": False, "message": "NGA 模块未加载"}), 500
+    try:
+        thread = nga_db.get_thread_config(tid)
+        if not thread:
+            return jsonify({"success": False, "message": "帖子配置不存在"}), 404
+        db = Database.Create()
+        try:
+            # 校验 task_id 属于该 tid
+            t = db.get_nga_auto_summary_task_by_id(int(task_id))
+            if not t or int(t.get("tid") or 0) != int(tid):
+                return jsonify({"success": False, "message": "自动任务不存在"}), 404
+            rows = db.list_nga_author_daily_summary_cache(tid=int(tid), task_id=int(task_id), limit=120)
+            return jsonify({"success": True, "items": rows})
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error("列出每日总结缓存失败: %s", e, exc_info=True)
+        return jsonify({"success": False, "message": "服务器内部错误"}), 500
+
+
+@bp.route('/api/nga_floors/<int:tid>/daily_summaries/<int:cache_id>', methods=['GET'])
+def get_nga_daily_summary_cache_item_api(tid: int, cache_id: int):
+    """读取单条每日总结缓存（含 data）。"""
+    if nga_db is None:
+        return jsonify({"success": False, "message": "NGA 模块未加载"}), 500
+    try:
+        thread = nga_db.get_thread_config(tid)
+        if not thread:
+            return jsonify({"success": False, "message": "帖子配置不存在"}), 404
+        db = Database.Create()
+        try:
+            item = db.get_nga_author_daily_summary_cache(cache_id=int(cache_id))
+            if not item or int(item.get("tid") or 0) != int(tid):
+                return jsonify({"success": False, "message": "记录不存在"}), 404
+            return jsonify({"success": True, "item": item})
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error("读取每日总结缓存失败: %s", e, exc_info=True)
+        return jsonify({"success": False, "message": "服务器内部错误"}), 500
 
 
 @bp.route('/api/nga_tasks/<int:tid>/toggle', methods=['POST'])

@@ -110,14 +110,11 @@ def get_tushare_token():
 
 def get_signal_price_source() -> str:
     """
-    信号计算价格源（DB 优先）：
-    - db_latest_close_qfq: 使用 DB 最新交易日 close(raw) * adj_factor → qfq
-    - realtime_qfq_opt_in: 仅显式开启时使用腾讯实时价，并用 adj_factor 转换为 qfq
+    信号计算价格源：直接使用腾讯在线实时价。
+    - realtime_qfq_opt_in: 使用腾讯实时价（raw），不做复权转换
     """
-    v = str(get_setting("SIGNAL_NOTIFY", "price_source", "db_latest_close_qfq") or "").strip().lower()
-    if v in ("db_latest_close_qfq", "realtime_qfq_opt_in"):
-        return v
-    return "db_latest_close_qfq"
+    # 按需求：忽略配置，固定使用腾讯实时行情
+    return "realtime_qfq_opt_in"
 
 
 def get_feishu_signal_send_card_image() -> bool:

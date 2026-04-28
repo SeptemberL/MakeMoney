@@ -342,10 +342,14 @@
                             '<div class="text-muted">每日 ' + escapeHtml(t.run_time || '') + ' · 群组 ' + escapeHtml(String(t.message_group_id || '')) + '</div>' +
                             exHtml +
                             '</div>' +
-                            '<button type="button" class="btn btn-sm btn-outline-danger flex-shrink-0">删除</button>';
-                        var btn = li.querySelector('button');
-                        if (btn) {
-                            btn.addEventListener('click', function() { deleteNgaAutoSummaryTask(t.id); });
+                            '<div class="d-flex gap-2 flex-shrink-0">' +
+                            '<button type="button" class="btn btn-sm btn-outline-primary">浏览每日总结</button>' +
+                            '<button type="button" class="btn btn-sm btn-outline-danger">删除</button>' +
+                            '</div>';
+                        var btns = li.querySelectorAll('button');
+                        if (btns && btns.length >= 2) {
+                            btns[0].addEventListener('click', function() { openDailySummaryBrowserModal(t.id); });
+                            btns[1].addEventListener('click', function() { deleteNgaAutoSummaryTask(t.id); });
                         }
                         ul.appendChild(li);
                     });
@@ -638,6 +642,7 @@
         let exportModal = null;
         let aiExplainModal = null;
         let authorDaySummaryModal = null;
+        let dailySummaryBrowserModal = null;
 
         function openExportModal(authorId, authorName) {
             document.getElementById('exportAuthorId').value = String(authorId || '');
@@ -717,13 +722,165 @@
             if (sdEl) {
                 authorDaySummaryModal = new bootstrap.Modal(sdEl);
             }
+            var dsEl = document.getElementById('dailySummaryBrowserModal');
+            if (dsEl) {
+                dailySummaryBrowserModal = new bootstrap.Modal(dsEl);
+            }
 
             var expAll = document.getElementById('exportAll');
             if (expAll) {
                 expAll.addEventListener('change', toggleExportAllUi);
             }
         });
+
+        function openDailySummaryBrowserModal(taskId) {
+            if (!dailySummaryBrowserModal) return;
+            // 打开“每日总结浏览”时，自动关闭“时段总结”弹窗，避免叠加
+            try {
+                if (authorDaySummaryModal) authorDaySummaryModal.hide();
+            } catch (e) {}
+
+            window.__dailySummarySelectedCacheId = null;
+            document.getElementById('dailySummaryTaskId').value = String(taskId || '');
+            document.getElementById('dailySummaryList').innerHTML = '<div class="text-muted small">加载中…</div>';
+            document.getElementById('dailySummaryContent').textContent = '';
+            fetch('/api/nga_floors/' + TID + '/auto_summary_tasks/' + encodeURIComponent(String(taskId)) + '/daily_summaries')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (!data.success) {
+                        document.getElementById('dailySummaryList').innerHTML =
+                            '<div class="text-danger small">' + escapeHtml(data.message || '加载失败') + '</div>';
+                        return;
+                    }
+                    var items = data.items || [];
+                    if (!items.length) {
+                        document.getElementById('dailySummaryList').innerHTML =
+                            '<div class="text-muted small">暂无缓存记录（只有命中 429 时才会写入）</div>';
+                        return;
+                    }
+                    var html = '<div class="list-group">';
+                    items.forEach(function(it) {
+                        html += '' +
+                            '<button type="button" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center" ' +
+                            'onclick="loadDailySummaryContent(' + it.id + ', this)">' +
+                            '<span>' + escapeHtml(it.summary_date || '') + '</span>' +
+                            '<span class="badge bg-secondary">' + escapeHtml(String(it.http_status || 0)) + '</span>' +
+                            '</button>';
+                    });
+                    html += '</div>';
+                    document.getElementById('dailySummaryList').innerHTML = html;
+                })
+                .catch(function() {
+                    document.getElementById('dailySummaryList').innerHTML = '<div class="text-danger small">加载失败</div>';
+                })
+                .finally(function() {
+                    dailySummaryBrowserModal.show();
+                });
+        }
+
+        function loadDailySummaryContent(cacheId, btnEl) {
+            window.__dailySummarySelectedCacheId = Number(cacheId) || null;
+            try {
+                // 高亮选中行
+                var root = document.getElementById('dailySummaryList');
+                if (root) {
+                    root.querySelectorAll('.list-group-item').forEach(function(x) {
+                        x.classList.remove('active');
+                    });
+                }
+                if (btnEl && btnEl.classList) btnEl.classList.add('active');
+            } catch (e) {}
+            document.getElementById('dailySummaryContent').textContent = '加载中…';
+            fetch('/api/nga_floors/' + TID + '/daily_summaries/' + encodeURIComponent(String(cacheId)))
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (!data.success || !data.item) {
+                        document.getElementById('dailySummaryContent').textContent = data.message || '加载失败';
+                        return;
+                    }
+                    document.getElementById('dailySummaryContent').textContent = data.item.data || '';
+                })
+                .catch(function() {
+                    document.getElementById('dailySummaryContent').textContent = '加载失败';
+                });
+        }
+
+        function copyDailySummaryToClipboard() {
+            var el = document.getElementById('dailySummaryContent');
+            if (!el) return;
+            if (!window.__dailySummarySelectedCacheId) {
+                alert('请先在左侧选择一个日期');
+                return;
+            }
+            var text = (el.textContent || '').trim();
+            if (!text) {
+                alert('当前没有可复制的内容');
+                return;
+            }
+            // 优先使用现代 Clipboard API
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text)
+                    .then(function() { alert('已复制到剪贴板'); })
+                    .catch(function() { fallbackCopy(text); });
+                return;
+            }
+            fallbackCopy(text);
+        }
+
+        function fallbackCopy(text) {
+            try {
+                var ta = document.createElement('textarea');
+                ta.value = text;
+                ta.setAttribute('readonly', '');
+                ta.style.position = 'fixed';
+                ta.style.left = '-9999px';
+                ta.style.top = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                ta.setSelectionRange(0, ta.value.length);
+                var ok = document.execCommand('copy');
+                document.body.removeChild(ta);
+                alert(ok ? '已复制到剪贴板' : '复制失败：浏览器不支持');
+            } catch (e) {
+                alert('复制失败：浏览器不支持');
+            }
+        }
     </script>
+
+    <!-- 每日总结浏览弹窗（429 回退缓存） -->
+    <div class="modal fade" id="dailySummaryBrowserModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">每日总结浏览（429 回退缓存）</h5>
+                    <div class="d-flex align-items-center gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyDailySummaryToClipboard()">
+                            复制当日总结
+                        </button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                    </div>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="dailySummaryTaskId" value="" />
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <div class="text-muted small mb-2">选择日期（每条记录一行）</div>
+                            <div id="dailySummaryList"></div>
+                        </div>
+                        <div class="col-md-8">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <div class="text-muted small">内容（可复制后手动发给 AI）</div>
+                            </div>
+                            <pre id="dailySummaryContent" class="border rounded p-2 bg-light" style="white-space: pre-wrap; min-height: 40vh;"></pre>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- 导出弹窗 -->
     <div class="modal fade" id="exportModal" tabindex="-1" aria-labelledby="exportModalLabel" aria-hidden="true">

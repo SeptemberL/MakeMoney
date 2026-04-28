@@ -279,6 +279,7 @@ class Database:
         self.ensure_etf_basic_tables()
         self.ensure_adj_factor_tables()
         self.ensure_nga_auto_summary_task_tables()
+        self.ensure_nga_author_daily_summary_cache_tables()
         self.migrate_positions_transactions_portfolio_user_id()
         self.migrate_investment_calendar_item_remind_columns()
         self.ensure_investment_calendar_reminder_log_tables()
@@ -1345,6 +1346,164 @@ class Database:
             self._create_nga_auto_summary_task_tables_sqlite()
         else:
             self._create_nga_auto_summary_task_tables_mysql()
+
+    # ─────────────────────────── NGA 作者时段总结缓存（429 回退） ────────────────────────────
+
+    def _create_nga_author_daily_summary_cache_tables_sqlite(self):
+        self.execute(
+            '''CREATE TABLE IF NOT EXISTS nga_author_daily_summary_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            tid INTEGER NOT NULL,
+            author_id INTEGER NOT NULL,
+            summary_date TEXT NOT NULL,
+            data TEXT NOT NULL,
+            http_status INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(task_id, summary_date)
+        )'''
+        )
+        try:
+            self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_nga_author_daily_summary_cache_tid ON nga_author_daily_summary_cache (tid)"
+            )
+        except Exception:
+            pass
+        try:
+            self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_nga_author_daily_summary_cache_task ON nga_author_daily_summary_cache (task_id)"
+            )
+        except Exception:
+            pass
+
+    def _create_nga_author_daily_summary_cache_tables_mysql(self):
+        self.execute(
+            '''CREATE TABLE IF NOT EXISTS nga_author_daily_summary_cache (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            task_id BIGINT NOT NULL,
+            tid INT NOT NULL,
+            author_id INT NOT NULL,
+            summary_date DATE NOT NULL,
+            data MEDIUMTEXT NOT NULL,
+            http_status INT NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_nga_author_daily_summary_cache_task_date (task_id, summary_date),
+            KEY idx_nga_author_daily_summary_cache_tid (tid),
+            KEY idx_nga_author_daily_summary_cache_task (task_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'''
+        )
+
+    def ensure_nga_author_daily_summary_cache_tables(self):
+        """当 Gemini 命中 429 时，将“当日总结材料/结果”落库，供页面弹窗回看（MySQL / SQLite 一致）。"""
+        if self.is_sqlite:
+            self._create_nga_author_daily_summary_cache_tables_sqlite()
+        else:
+            self._create_nga_author_daily_summary_cache_tables_mysql()
+
+    def upsert_nga_author_daily_summary_cache(
+        self,
+        *,
+        task_id: int,
+        tid: int,
+        author_id: int,
+        summary_date: str,
+        data: str,
+        http_status: int = 0,
+    ) -> bool:
+        """写入或更新某 task_id 在某日期的缓存内容（幂等，一天一行）。"""
+        self.ensure_nga_author_daily_summary_cache_tables()
+        t_id = int(task_id)
+        if t_id < 0:
+            t_id = 0
+        td = int(tid)
+        aid = int(author_id)
+        d = str(summary_date or "").strip()
+        if not d:
+            raise ValueError("summary_date 不能为空")
+        body = (data or "").strip()
+        if not body:
+            raise ValueError("data 不能为空")
+        hs = int(http_status or 0)
+        if self.is_sqlite:
+            self.execute(
+                '''INSERT INTO nga_author_daily_summary_cache (task_id, tid, author_id, summary_date, data, http_status, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                   ON CONFLICT(task_id, summary_date) DO UPDATE SET
+                       tid=excluded.tid,
+                       author_id=excluded.author_id,
+                       data=excluded.data,
+                       http_status=excluded.http_status,
+                       updated_at=CURRENT_TIMESTAMP''',
+                (t_id, td, aid, d, body, hs),
+            )
+        else:
+            # MySQL summary_date 为 DATE；直接传 YYYY-MM-DD 字符串即可
+            self.execute(
+                '''INSERT INTO nga_author_daily_summary_cache (task_id, tid, author_id, summary_date, data, http_status)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE
+                       tid=VALUES(tid),
+                       author_id=VALUES(author_id),
+                       data=VALUES(data),
+                       http_status=VALUES(http_status),
+                       updated_at=CURRENT_TIMESTAMP''',
+                (t_id, td, aid, d, body, hs),
+            )
+        return True
+
+    def list_nga_author_daily_summary_cache(self, *, tid: int, task_id: int, limit: int = 60) -> list[dict]:
+        """按 tid+task_id 列出缓存（日期倒序）。"""
+        self.ensure_nga_author_daily_summary_cache_tables()
+        lim = int(limit or 60)
+        if lim < 1:
+            lim = 1
+        if lim > 365:
+            lim = 365
+        rows = self.fetch_all(
+            f"SELECT id, task_id, tid, author_id, summary_date, http_status, created_at, updated_at "
+            f"FROM nga_author_daily_summary_cache WHERE tid=%s AND task_id=%s "
+            f"ORDER BY summary_date DESC, id DESC LIMIT {lim}",
+            (int(tid), int(task_id)),
+        )
+        out = []
+        for r in rows or []:
+            out.append(
+                {
+                    "id": int(r.get("id")),
+                    "task_id": int(r.get("task_id")),
+                    "tid": int(r.get("tid")),
+                    "author_id": int(r.get("author_id")),
+                    "summary_date": str(r.get("summary_date") or "")[:10],
+                    "http_status": int(r.get("http_status") or 0),
+                    "created_at": r.get("created_at"),
+                    "updated_at": r.get("updated_at"),
+                }
+            )
+        return out
+
+    def get_nga_author_daily_summary_cache(self, *, cache_id: int) -> dict | None:
+        """读取单条缓存（含 data）。"""
+        self.ensure_nga_author_daily_summary_cache_tables()
+        row = self.fetch_one(
+            "SELECT id, task_id, tid, author_id, summary_date, data, http_status, created_at, updated_at "
+            "FROM nga_author_daily_summary_cache WHERE id=%s LIMIT 1",
+            (int(cache_id),),
+        )
+        if not row:
+            return None
+        return {
+            "id": int(row.get("id")),
+            "task_id": int(row.get("task_id")),
+            "tid": int(row.get("tid")),
+            "author_id": int(row.get("author_id")),
+            "summary_date": str(row.get("summary_date") or "")[:10],
+            "data": row.get("data") or "",
+            "http_status": int(row.get("http_status") or 0),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        }
 
     def list_nga_auto_summary_tasks_by_tid(self, tid: int) -> list:
         self.ensure_nga_auto_summary_task_tables()

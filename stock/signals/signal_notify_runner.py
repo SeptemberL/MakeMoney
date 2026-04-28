@@ -331,26 +331,19 @@ def run_signal_notify_tick(*, force: bool = False) -> Dict[str, int]:
     price_meta: Dict[str, dict] = {}
     price_stats: Dict[str, int] = {"requested": len(codes), "prices_fetched": 0, "missing_adj_factor": 0}
     if price_source == "realtime_qfq_opt_in":
+        # 按需求：直接使用腾讯在线实时价（raw），不做前/后复权转换
         raw_prices = _fetch_realtime_prices(codes)
         prices: Dict[str, float] = {}
-        if raw_prices:
-            db = Database.Create()
+        for sc, raw_p in (raw_prices or {}).items():
             try:
-                for sc, raw_p in raw_prices.items():
-                    qfq_p = _convert_raw_price_to_qfq(db=db, stock_code=sc, raw_price=float(raw_p))
-                    if qfq_p is None:
-                        price_stats["missing_adj_factor"] += 1
-                        if missing_policy != "raw_fallback":
-                            continue
-                        qfq_p = float(raw_p)
-                    prices[sc] = float(qfq_p)
-                    price_meta[sc] = {
-                        "data_source": "tencent_realtime",
-                        "adjustment": "qfq" if qfq_p is not None and qfq_p != float(raw_p) else "raw_fallback",
-                        "factor_coverage": "complete" if qfq_p is not None and qfq_p != float(raw_p) else "missing",
-                    }
-            finally:
-                db.close()
+                prices[sc] = float(raw_p)
+                price_meta[sc] = {
+                    "data_source": "tencent_realtime",
+                    "adjustment": "raw",
+                    "factor_coverage": "n/a",
+                }
+            except Exception:
+                continue
         price_stats["prices_fetched"] = len(prices or {})
     else:
         prices, price_meta, price_stats = _fetch_db_latest_close_qfq_prices_with_meta(codes)

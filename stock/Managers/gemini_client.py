@@ -76,6 +76,10 @@ class GeminiRequestError(GeminiError):
 class GeminiTransientError(GeminiError):
     """可重试错误（网络、超时、5xx、429 等）。"""
 
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 def _mask_secret(s: Optional[str], *, keep: int = 3) -> str:
     v = (s or "").strip()
@@ -267,7 +271,7 @@ class GeminiClient:
                     )
                     self._sleep_backoff(attempt)
                     continue
-                raise GeminiTransientError(f"Gemini 服务端错误 status={status}")
+                raise GeminiTransientError(f"Gemini 服务端错误 status={status}", status_code=status)
 
             if status and status >= 400:
                 logger.info(
