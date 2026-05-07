@@ -1,0 +1,9 @@
+3)材质、特效、蓝图、pcg 节点图的专用 agent
+能力：ask，debug，create, translate(将节点图转换为 hlsl)
+4）传统是AI 渲染，传统渲染+AI辅助
+神经网络材质，超分辨率，降噪，压缩，NRC
+希望 AI 主导渲染+传统辅助
+
+AI 玩法开发
+
+

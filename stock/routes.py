@@ -152,6 +152,18 @@ def _set_portfolio_cash(db: Database, user_id: int, *, mode: str, value: float) 
     return _get_portfolio(db, uid)
 
 
+def _set_portfolio_total_capital(db: Database, user_id: int, *, value: float) -> dict:
+    """设置初始资金（total_capital）。返回更新后的 portfolio dict。"""
+    uid = int(user_id)
+    _ensure_portfolio_row(db, uid)
+    v = float(value)
+    db.execute(
+        "UPDATE portfolio SET total_capital = %s, updated_at = CURRENT_TIMESTAMP WHERE user_id = %s",
+        (float(v), uid),
+    )
+    return _get_portfolio(db, uid)
+
+
 def _maybe_update_portfolio_market_value(db: Database, user_id: int) -> dict:
     """用数据库中最新 close 估算 market_value，并写回 portfolio。"""
     uid = int(user_id)
@@ -503,6 +515,39 @@ def api_put_settings():
         return jsonify({"success": True, "require_restart": True})
     except Exception as e:
         logger.error("保存 settings 失败: %s", e, exc_info=True)
+        return jsonify({"success": False, "message": "服务器内部错误"}), 500
+
+
+@bp.route('/api/nga_ai_settings', methods=['GET'])
+def api_get_nga_ai_settings():
+    """读取 NGA AI 相关开关（DB 优先，缺失回退 config.ini）。"""
+    try:
+        from Managers.runtime_settings import get_setting
+
+        raw = get_setting("NGA_AI", "author_summary_send_enabled", "0")
+        v = str(raw or "").strip().lower()
+        enabled = v in ("1", "true", "yes", "on")
+        return jsonify({"success": True, "author_summary_send_enabled": enabled})
+    except Exception as e:
+        logger.error("读取 nga_ai_settings 失败: %s", e, exc_info=True)
+        return jsonify({"success": False, "message": "服务器内部错误"}), 500
+
+
+@bp.route('/api/nga_ai_settings', methods=['PUT'])
+def api_put_nga_ai_settings():
+    """保存 NGA AI 相关开关到 DB（不改写 config.ini）。"""
+    try:
+        data = request.get_json(silent=True) or {}
+        enabled = bool(data.get("author_summary_send_enabled"))
+        db = Database.Create()
+        try:
+            db.ensure_system_settings_tables()
+            db.upsert_system_setting("NGA_AI", "author_summary_send_enabled", "1" if enabled else "0")
+        finally:
+            db.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error("保存 nga_ai_settings 失败: %s", e, exc_info=True)
         return jsonify({"success": False, "message": "服务器内部错误"}), 500
 
 
@@ -1333,6 +1378,28 @@ def _get_positions_with_market(user_id: int):
         rows = db.fetch_all(sql, (uid,)) or []
         _fill_positions_stock_name_from_basic(db, rows)
 
+        # 兼容历史脏数据：同一股票可能因尾随空格/带后缀（.SH/.SZ）等格式差异产生重复行。
+        # 这里按“规范化后的 basic code”去重，保留最新一条（SQL 已按 id DESC 排序）。
+        try:
+            dedup = []
+            seen = set()
+            for r in rows or []:
+                raw = (r.get("stock_code") or "")
+                key = _normalize_stock_code_for_basic(raw)
+                key = (key or "").strip()
+                if not key:
+                    # 异常数据仍保留，避免误删展示
+                    dedup.append(r)
+                    continue
+                if key in seen:
+                    continue
+                seen.add(key)
+                dedup.append(r)
+            rows = dedup
+        except Exception:
+            # 兜底：不影响页面渲染
+            pass
+
         # 计算持仓天数：按日期计算（首次买入 trade_date -> 今天日期；查不到则回退 created_at）
         today = _dt.now().date()
         # 1) 批量取每个持仓股票的首次买入日期
@@ -1551,8 +1618,60 @@ def positions_page():
     """持仓列表页面（只读），需登录，仅展示当前账号持仓。"""
     if 'user_id' not in session:
         return redirect(url_for('main.index'))
-    positions = _get_positions_with_market(int(session['user_id']))
-    return render_template('positions.html', positions=positions)
+    uid = int(session["user_id"])
+    positions = _get_positions_with_market(uid)
+    db = Database.Create()
+    try:
+        port = _get_portfolio(db, uid)
+    finally:
+        db.close()
+
+    # 汇总：总资产/持仓市值/持仓占比/浮盈浮亏
+    market_value = 0.0
+    cost_basis = 0.0
+    pnl_amt = 0.0
+    priced_count = 0
+    for p in positions or []:
+        try:
+            qty = float(p.get("quantity") or 0)
+            cp = float(p.get("cost_price") or 0)
+        except Exception:
+            continue
+        cur = p.get("current_price")
+        if cur is None:
+            continue
+        try:
+            cur = float(cur)
+        except Exception:
+            continue
+        priced_count += 1
+        market_value += qty * cur
+        cost_basis += qty * cp
+        pnl_amt += (cur - cp) * qty
+
+    # 口径：
+    # - 持仓值 = 列表里所有股票总市值总和（market_value）
+    # - 剩余现金 = 总资产 - 持仓值
+    # 目前总资产仍按「可用现金 + 持仓市值」计算（与现有资金录入逻辑一致）
+    available_cash = float((port or {}).get("available_cash") or 0)
+    total_capital = float((port or {}).get("total_capital") or 0)
+    total_assets = available_cash + market_value
+    remaining_cash = total_assets - market_value
+    holding_pct = (market_value / total_assets * 100.0) if total_assets > 0 else 0.0
+    pnl_pct = (pnl_amt / cost_basis * 100.0) if cost_basis > 0 else 0.0
+    total_return_pct = ((total_assets - total_capital) / total_capital * 100.0) if total_capital > 0 else 0.0
+    summary = {
+        "total_assets": float(total_assets),
+        "remaining_cash": float(remaining_cash),
+        "market_value": float(market_value),
+        "holding_pct": float(holding_pct),
+        "pnl_amt": float(pnl_amt),
+        "pnl_pct": float(pnl_pct),
+        "total_return_pct": float(total_return_pct),
+        "priced_count": int(priced_count),
+    }
+
+    return render_template('positions.html', positions=positions, portfolio=port, summary=summary)
 
 
 @bp.route("/api/portfolio", methods=["GET"])
@@ -1574,22 +1693,38 @@ def api_portfolio_get():
 
 @bp.route("/api/portfolio/adjust_cash", methods=["POST"])
 def api_portfolio_adjust_cash():
-    """调整剩余资金（available_cash），支持 set/delta。"""
+    """调整组合资金：available_cash（set/delta）+ 可选设置 total_capital。"""
     not_logged_in = _require_login_json()
     if not_logged_in:
         return not_logged_in
     payload = request.get_json(silent=True) or {}
     mode = (payload.get("mode") or "set").strip().lower()
-    if "value" not in payload:
-        return jsonify({"success": False, "message": "缺少 value"}), 400
-    try:
-        value = float(payload.get("value"))
-    except Exception:
-        return jsonify({"success": False, "message": "value 必须为数值"}), 400
+    value_raw = payload.get("value", None)
+    total_capital_raw = payload.get("total_capital", None)
+    if value_raw is None and total_capital_raw is None:
+        return jsonify({"success": False, "message": "缺少 value 或 total_capital"}), 400
+    value = None
+    if value_raw is not None:
+        try:
+            value = float(value_raw)
+        except Exception:
+            return jsonify({"success": False, "message": "value 必须为数值"}), 400
+    total_capital = None
+    if total_capital_raw is not None and str(total_capital_raw).strip() != "":
+        try:
+            total_capital = float(total_capital_raw)
+        except Exception:
+            return jsonify({"success": False, "message": "total_capital 必须为数值"}), 400
     db = Database.Create()
     try:
         db.begin_transaction()
-        p = _set_portfolio_cash(db, int(session["user_id"]), mode=mode, value=value)
+        uid = int(session["user_id"])
+        if value is not None:
+            p = _set_portfolio_cash(db, uid, mode=mode, value=value)
+        else:
+            p = _get_portfolio(db, uid)
+        if total_capital is not None:
+            p = _set_portfolio_total_capital(db, uid, value=total_capital)
         db.commit()
         return jsonify({"success": True, "portfolio": p})
     except ValueError as ve:
@@ -1636,6 +1771,50 @@ def api_positions_export_ai_txt():
         # 持仓（带 current_price/total_value 计算）
         positions = _get_positions_with_market(uid) or []
 
+        # 导出时优先用腾讯实时行情填充 current_price，避免 NA
+        try:
+            from stocks.stock_quote_tencent import fetch_quotes
+
+            codes = []
+            for p in positions:
+                sc = str(p.get("stock_code") or "").strip()
+                if sc:
+                    codes.append(sc)
+            codes = sorted(set(codes))
+            quotes = fetch_quotes(codes) if codes else {}
+
+            def _match_quote(stock_code: str):
+                sc = (stock_code or "").strip()
+                if not sc or not quotes:
+                    return None
+                if sc in quotes:
+                    return quotes.get(sc)
+                base = sc.split(".", 1)[0].strip()
+                # 尽量按 quote.code 命中（sh600000/sz000001 等）
+                cand = {sc.lower(), base.lower(), ("sh" + base).lower(), ("sz" + base).lower(), ("bj" + base).lower()}
+                for v in quotes.values():
+                    try:
+                        c = str(getattr(v, "code", "") or "").lower()
+                        if c and c in cand:
+                            return v
+                    except Exception:
+                        continue
+                return None
+
+            for p in positions:
+                sc = str(p.get("stock_code") or "").strip()
+                q = _match_quote(sc)
+                if not q:
+                    continue
+                try:
+                    now = float(getattr(q, "now", None))
+                except Exception:
+                    continue
+                if now > 0:
+                    p["current_price"] = now
+        except Exception:
+            pass
+
         # 为图表准备：读取每只票近 N 日 close
         charts: dict[str, dict] = {}
         for p in positions:
@@ -1675,14 +1854,53 @@ def api_positions_export_ai_txt():
 
         # 生成 txt
         now_s = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # 组合汇总（导出时实时计算；持仓市值以持仓列表汇总为准）
+        market_value_sum = 0.0
+        cost_basis_sum = 0.0
+        pnl_sum = 0.0
+        priced_count = 0
+        for p in positions or []:
+            try:
+                qty = float(p.get("quantity") or 0)
+                cp = float(p.get("cost_price") or 0)
+            except Exception:
+                continue
+            cur = p.get("current_price", None)
+            if cur is None:
+                continue
+            try:
+                cur_f = float(cur)
+            except Exception:
+                continue
+            if not (cur_f > 0):
+                continue
+            priced_count += 1
+            market_value_sum += qty * cur_f
+            cost_basis_sum += qty * cp
+            pnl_sum += (cur_f - cp) * qty
+
+        available_cash = float(port.get("available_cash") or 0)
+        total_capital = float(port.get("total_capital") or 0)
+        total_assets = available_cash + market_value_sum
+        remaining_cash = total_assets - market_value_sum
+        holding_pct = (market_value_sum / total_assets * 100.0) if total_assets > 0 else 0.0
+        pnl_pct = (pnl_sum / cost_basis_sum * 100.0) if cost_basis_sum > 0 else 0.0
+        total_return_pct = ((total_assets - total_capital) / total_capital * 100.0) if total_capital > 0 else 0.0
+
         lines: list[str] = []
         lines.append("【持仓咨询材料（请直接发给 AI）】")
         lines.append(f"导出时间: {now_s}")
         lines.append("")
         lines.append("【组合概览】")
-        lines.append(f"- 可用现金(available_cash): {port.get('available_cash', 0):.2f}")
-        lines.append(f"- 总资金(total_capital): {port.get('total_capital', 0):.2f}")
-        lines.append(f"- 持仓市值(market_value): {port.get('market_value', 0):.2f}")
+        lines.append(f"- 初始资金(total_capital): {total_capital:.2f}")
+        lines.append(f"- 总资产(现金+持仓): {total_assets:.2f}")
+        lines.append(f"- 持仓市值(持仓汇总): {market_value_sum:.2f}")
+        lines.append(f"- 剩余现金(总资产-持仓): {remaining_cash:.2f}")
+        lines.append(f"- 持仓占比: {holding_pct:.2f}%")
+        lines.append(f"- 持仓浮盈浮亏: {pnl_sum:.2f} ({pnl_pct:.2f}%)")
+        lines.append(f"- 当前总盈亏%: {total_return_pct:.2f}%")
+        lines.append(f"- 有价格的持仓数量: {priced_count}/{len(positions or [])}")
         lines.append("")
         lines.append("【当前持仓列表】")
         if not positions:
@@ -1710,7 +1928,7 @@ def api_positions_export_ai_txt():
             lines.append(f"{i}. {nm} {sc}".strip())
             lines.append(f"   - 持仓数量: {qty:.2f}")
             lines.append(f"   - 成本价: {cost:.3f}")
-            lines.append(f"   - 当前价(最新close): {(cur_f if cur_f is not None else 'NA')}")
+            lines.append(f"   - 当前价: {(cur_f if cur_f is not None else 'NA')}")
             if pnl is not None:
                 lines.append(f"   - 浮盈浮亏: {pnl:.2f} ({(pnl_pct if pnl_pct is not None else 'NA')})")
             if mv is not None:
@@ -1737,7 +1955,7 @@ def api_positions_export_ai_txt():
         lines.append("3) 给出可执行的分批计划：触发条件（价位/时间/信号）与每次调整比例。")
         lines.append("4) 风险提示：最大回撤控制、止损止盈、事件风险。")
         lines.append("")
-        lines.append("（注：以上数据为本地记录与数据库最新 close 估算，非实时成交价；仅供辅助决策。）")
+        lines.append("（注：当前价优先使用腾讯实时行情 now；若获取失败则回退为数据库最新 close 估算；仅供辅助决策。）")
 
         body = "\n".join(lines)
         fname = f"positions_ai_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
@@ -1753,6 +1971,187 @@ def api_positions_export_ai_txt():
         return jsonify({"success": False, "message": "服务器内部错误"}), 500
     finally:
         db.close()
+
+
+@bp.route("/api/positions/export_csv", methods=["GET"])
+def api_positions_export_csv():
+    """导出当前持仓为 CSV（含顶部汇总行）。"""
+    not_logged_in = _require_login_json()
+    if not_logged_in:
+        return not_logged_in
+
+    import csv
+    import io
+
+    uid = int(session["user_id"])
+    db = Database.Create()
+    try:
+        port = _get_portfolio(db, uid)
+        positions = _get_positions_with_market(uid) or []
+    finally:
+        db.close()
+
+    # 导出时 current_price 直接使用腾讯实时行情（避免 N/A/空值）
+    try:
+        from stocks.stock_quote_tencent import fetch_quotes
+
+        codes = []
+        for p in positions or []:
+            sc = str(p.get("stock_code") or "").strip()
+            if sc:
+                codes.append(sc)
+        codes = sorted(set(codes))
+        quotes = fetch_quotes(codes) if codes else {}
+        # 用腾讯 now 覆盖 current_price，并同步 total_value
+        for p in positions or []:
+            sc = str(p.get("stock_code") or "").strip()
+            if not sc:
+                continue
+            q = None
+            # fetch_quotes 可能返回 key 为 full_code，也可能是输入 code；这里尽量多方式命中
+            if quotes:
+                if sc in quotes:
+                    q = quotes.get(sc)
+                else:
+                    base = sc.split(".", 1)[0].strip()
+                    for v in quotes.values():
+                        try:
+                            if v and str(getattr(v, "code", "") or "").lower() in {sc.lower(), base.lower(), ("sh" + base).lower(), ("sz" + base).lower(), ("bj" + base).lower()}:
+                                q = v
+                                break
+                        except Exception:
+                            continue
+            if not q:
+                continue
+            try:
+                now = float(getattr(q, "now", None))
+            except Exception:
+                continue
+            if not (now > 0):
+                continue
+            p["current_price"] = now
+            try:
+                qty = float(p.get("quantity") or 0)
+            except Exception:
+                qty = 0.0
+            p["total_value"] = qty * now
+    except Exception:
+        # 兜底：腾讯行情失败则保留 _get_positions_with_market 的 current_price（可能为最新 close）
+        pass
+
+    # 与持仓页一致的汇总口径
+    market_value = 0.0
+    cost_basis = 0.0
+    pnl_amt = 0.0
+    for p in positions or []:
+        try:
+            qty = float(p.get("quantity") or 0)
+            cp = float(p.get("cost_price") or 0)
+        except Exception:
+            continue
+        cur = p.get("current_price")
+        if cur is None:
+            continue
+        try:
+            cur = float(cur)
+        except Exception:
+            continue
+        market_value += qty * cur
+        cost_basis += qty * cp
+        pnl_amt += (cur - cp) * qty
+
+    available_cash = float((port or {}).get("available_cash") or 0)
+    total_capital = float((port or {}).get("total_capital") or 0)
+    total_assets = available_cash + market_value
+    remaining_cash = total_assets - market_value
+    holding_pct = (market_value / total_assets * 100.0) if total_assets > 0 else 0.0
+    pnl_pct = (pnl_amt / cost_basis * 100.0) if cost_basis > 0 else 0.0
+    total_return_pct = ((total_assets - total_capital) / total_capital * 100.0) if total_capital > 0 else 0.0
+
+    headers = [
+        "stock_code",
+        "stock_name",
+        "quantity",
+        "cost_price",
+        "current_price",
+        "total_value",
+        "pnl_amt",
+        "pnl_pct",
+        "holding_days",
+    ]
+
+    buf = io.StringIO(newline="")
+    w = csv.writer(buf)
+
+    # 汇总行：为了兼容 Excel，保持与明细相同列数（多余列留空）
+    def sum_row(label: str, value: str):
+        row = [""] * len(headers)
+        row[0] = label
+        row[1] = value
+        w.writerow(row)
+
+    sum_row("汇总_总资产", f"{total_assets:.2f}")
+    sum_row("汇总_持仓市值", f"{market_value:.2f}")
+    sum_row("汇总_持仓占比%", f"{holding_pct:.2f}%")
+    sum_row("汇总_剩余现金", f"{remaining_cash:.2f}")
+    sum_row("汇总_盈亏", f"{pnl_amt:.2f}")
+    sum_row("汇总_盈亏%", f"{pnl_pct:.2f}%")
+    sum_row("汇总_初始资金", f"{total_capital:.2f}")
+    sum_row("汇总_当前总盈亏%", f"{total_return_pct:.2f}%")
+    w.writerow([""] * len(headers))
+
+    # 明细表头 + 明细
+    w.writerow(headers)
+    for p in positions or []:
+        sc = str(p.get("stock_code") or "").strip()
+        nm = str(p.get("stock_name") or "").strip()
+        try:
+            qty = float(p.get("quantity") or 0)
+        except Exception:
+            qty = 0.0
+        try:
+            cp = float(p.get("cost_price") or 0)
+        except Exception:
+            cp = 0.0
+        cur = p.get("current_price")
+        cur_f = None
+        try:
+            cur_f = float(cur) if cur is not None else None
+        except Exception:
+            cur_f = None
+        tv = p.get("total_value")
+        tv_f = None
+        try:
+            tv_f = float(tv) if tv is not None else None
+        except Exception:
+            tv_f = None
+        pnl = None
+        pnlp = None
+        if cur_f is not None:
+            pnl = (cur_f - cp) * qty
+            if cp > 0:
+                pnlp = ((cur_f - cp) / cp) * 100.0
+        hd = p.get("holding_days")
+
+        w.writerow(
+            [
+                sc,
+                nm,
+                f"{qty:.2f}",
+                f"{cp:.3f}",
+                (f"{cur_f:.3f}" if cur_f is not None else ""),
+                (f"{tv_f:.2f}" if tv_f is not None else ""),
+                (f"{pnl:.2f}" if pnl is not None else ""),
+                (f"{pnlp:.2f}%" if pnlp is not None else ""),
+                (str(hd) if hd is not None else ""),
+            ]
+        )
+
+    content = buf.getvalue().encode("utf-8-sig")
+    filename = f"positions_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    resp = Response(content, mimetype="text/csv; charset=utf-8")
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
 
 
 
@@ -2140,6 +2539,8 @@ def position_trade_page():
     db = Database.Create()
     try:
         db.begin_transaction()
+        # 统一规范化股票代码，避免同一股票因不同格式导致重复持仓行
+        stock_code = _normalize_stock_code_for_basic(stock_code)
         # 名称优先使用 stock_basic / etf_basic（若存在）
         basic_name = _lookup_asset_name(db, stock_code)
         if basic_name:
@@ -2210,6 +2611,7 @@ def _apply_position_trade(
 ):
     """在一个已打开的 db 连接上应用一笔买入/卖出，并写入 transactions 与更新 positions（按 user_id 隔离）。"""
     uid = int(user_id)
+    stock_code = _normalize_stock_code_for_basic(stock_code)
     # 写入交易流水
     db.execute(
         '''INSERT INTO transactions
@@ -2231,7 +2633,8 @@ def _apply_position_trade(
                 # 极端情况，直接删除持仓
                 db.execute('DELETE FROM positions WHERE stock_code = %s AND user_id = %s', (stock_code, uid))
             else:
-                total_cost = old_cost * old_qty + price * quantity + fee
+                # 持仓成本价口径：按成交价加权，不把手续费并入成本价
+                total_cost = old_cost * old_qty + price * quantity
                 # 成本价统一保留 3 位小数（用于展示与后续计算一致性）
                 new_cost = round((total_cost / new_qty), 3)
                 db.execute(
@@ -2283,6 +2686,169 @@ def _apply_position_trade(
         _maybe_update_portfolio_market_value(db, uid)
 
 
+def _rebuild_position_for_user_stock(db, user_id: int, stock_code: str) -> None:
+    """
+    按时间顺序重放该用户某只股票的全部 transactions，重建 positions 一行。
+    规则与 _apply_position_trade 一致：首笔买入成本价为 round(price,3)；后续买入加权含手续费；卖出只减数量、成本价不变。
+    """
+    uid = int(user_id)
+    norm = _normalize_stock_code_for_basic(stock_code)
+    if not norm:
+        return
+
+    all_rows = db.fetch_all(
+        '''SELECT id, stock_code, action, price, quantity, fee, trade_date, created_at
+           FROM transactions WHERE user_id = %s
+           ORDER BY trade_date ASC, id ASC''',
+        (uid,),
+    ) or []
+    rows = [
+        r
+        for r in all_rows
+        if _normalize_stock_code_for_basic(str(r.get('stock_code') or '')) == norm
+    ]
+
+    prow = db.fetch_all('SELECT id, stock_code FROM positions WHERE user_id = %s', (uid,)) or []
+    for pr in prow:
+        if _normalize_stock_code_for_basic(str(pr.get('stock_code') or '')) == norm:
+            db.execute('DELETE FROM positions WHERE id = %s', (pr.get('id'),))
+
+    if not rows:
+        return
+
+    stock_name = _lookup_asset_name(db, norm) or ''
+    qty = 0.0
+    cost = 0.0
+    # 防重复：过滤“连续重复入库”的同一笔流水（常见于前端重复提交）
+    compact_rows = []
+    prev_sig = None
+    prev_id = None
+    for r in rows:
+        sig = (
+            _normalize_stock_code_for_basic(str(r.get('stock_code') or '')),
+            (r.get('action') or '').lower(),
+            round(float(r.get('price') or 0), 6),
+            round(float(r.get('quantity') or 0), 6),
+            round(float(r.get('fee') or 0), 6),
+            str(r.get('trade_date') or ''),
+        )
+        rid = int(r.get('id') or 0)
+        if prev_sig is not None and sig == prev_sig and prev_id is not None and abs(rid - prev_id) <= 1:
+            continue
+        compact_rows.append(r)
+        prev_sig = sig
+        prev_id = rid
+
+    for r in compact_rows:
+        action = (r.get('action') or '').lower()
+        try:
+            price = round(float(r.get('price') or 0), 3)
+            q = float(r.get('quantity') or 0)
+            fee = float(r.get('fee') or 0)
+        except (TypeError, ValueError):
+            continue
+        if price <= 0 or q <= 0:
+            continue
+        if action == 'buy':
+            if qty <= 0:
+                qty = q
+                cost = round(float(price), 3)
+            else:
+                new_qty = qty + q
+                # 与 _apply_position_trade 保持一致：按成交价加权，不并入手续费
+                total_cost = cost * qty + price * q
+                cost = round((total_cost / new_qty), 3)
+                qty = new_qty
+        elif action == 'sell':
+            if qty < q:
+                raise ValueError(f'{norm} 流水重放失败：卖出数量大于持仓数量')
+            new_qty = qty - q
+            if new_qty <= 0:
+                qty = 0.0
+                cost = 0.0
+            else:
+                qty = new_qty
+        else:
+            continue
+
+    if qty <= 0:
+        return
+    db.execute(
+        '''INSERT INTO positions (user_id, stock_code, stock_name, quantity, cost_price)
+           VALUES (%s, %s, %s, %s, %s)''',
+        (uid, norm, stock_name, qty, cost),
+    )
+
+
+@bp.route('/api/transactions/<int:tid>', methods=['PUT'])
+def api_transaction_update(tid: int):
+    """修改当前用户的一条历史交易流水，并按流水重建受影响股票的持仓。"""
+    if 'user_id' not in session:
+        return jsonify({'success': False, 'message': '未登录', 'require_login': True}), 401
+    data = request.get_json() or {}
+    uid = int(session['user_id'])
+    stock_code_in = (data.get('stock_code') or '').strip()
+    action = (data.get('action') or '').lower()
+    price = data.get('price')
+    quantity = data.get('quantity')
+    fee = data.get('fee', 0)
+    trade_date = (data.get('trade_date') or '').strip()
+
+    if action not in ('buy', 'sell'):
+        return jsonify({'success': False, 'message': 'action 只能为 buy 或 sell'}), 400
+    try:
+        price = round(float(price), 3)
+        quantity = float(quantity)
+        fee = float(fee)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'price/quantity/fee 必须为数值'}), 400
+    if price <= 0 or quantity <= 0:
+        return jsonify({'success': False, 'message': 'price 和 quantity 必须大于 0'}), 400
+    if not trade_date:
+        return jsonify({'success': False, 'message': 'trade_date 不能为空'}), 400
+
+    db = Database.Create()
+    try:
+        db.begin_transaction()
+        row = db.fetch_one(
+            '''SELECT id, stock_code, action, price, quantity, fee, trade_date
+               FROM transactions WHERE id = %s AND user_id = %s''',
+            (tid, uid),
+        )
+        if not row:
+            db.rollback()
+            return jsonify({'success': False, 'message': '记录不存在'}), 404
+        old_norm = _normalize_stock_code_for_basic(str(row.get('stock_code') or ''))
+        new_norm = _normalize_stock_code_for_basic(stock_code_in) if stock_code_in else old_norm
+        if not new_norm:
+            db.rollback()
+            return jsonify({'success': False, 'message': '股票代码无效'}), 400
+
+        db.execute(
+            '''UPDATE transactions
+               SET stock_code = %s, action = %s, price = %s, quantity = %s, fee = %s, trade_date = %s
+               WHERE id = %s AND user_id = %s''',
+            (new_norm, action, price, quantity, fee, trade_date, tid, uid),
+        )
+
+        to_rebuild = {old_norm, new_norm}
+        for code in to_rebuild:
+            if code:
+                _rebuild_position_for_user_stock(db, uid, code)
+        _maybe_update_portfolio_market_value(db, uid)
+        db.commit()
+        return jsonify({'success': True})
+    except ValueError as ve:
+        db.rollback()
+        return jsonify({'success': False, 'message': str(ve)}), 400
+    except Exception as e:
+        db.rollback()
+        logger.error('修改交易流水失败: %s', e, exc_info=True)
+        return jsonify({'success': False, 'message': '服务器内部错误'}), 500
+    finally:
+        db.close()
+
+
 @bp.route('/api/positions/trade', methods=['POST'])
 def api_position_trade():
     """
@@ -2325,6 +2891,8 @@ def api_position_trade():
     db = Database.Create()
     try:
         db.begin_transaction()
+        # 统一规范化股票代码，避免同一股票因不同格式/尾随空格导致重复持仓行
+        stock_code = _normalize_stock_code_for_basic(stock_code)
         basic_name = _lookup_asset_name(db, stock_code)
         if basic_name:
             stock_name = basic_name
@@ -2364,7 +2932,7 @@ def api_position_delete(stock_code):
     """
     if 'user_id' not in session:
         return jsonify({'success': False, 'message': '未登录', 'require_login': True}), 401
-    stock_code = (stock_code or '').strip()
+    stock_code = _normalize_stock_code_for_basic((stock_code or '').strip())
     if not stock_code:
         return jsonify({'success': False, 'message': '股票代码不能为空'}), 400
     uid = int(session['user_id'])
@@ -2468,7 +3036,19 @@ def api_position_history(stock_code):
             (stock_code, uid)
         )
         records = []
+        seen_keys = set()
         for r in rows or []:
+            key = (
+                _normalize_stock_code_for_basic(str(r.get('stock_code') or '')),
+                (r.get('action') or '').lower(),
+                round(float(r.get('price') or 0), 6),
+                round(float(r.get('quantity') or 0), 6),
+                round(float(r.get('fee') or 0), 6),
+                str(r.get('trade_date') or ''),
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
             amount = float(r.get('price') or 0) * float(r.get('quantity') or 0) + float(r.get('fee') or 0)
             records.append({
                 'id': r.get('id'),
@@ -2506,7 +3086,19 @@ def positions_transactions_page():
             (uid,)
         )
         records = []
+        seen_keys = set()
         for r in rows or []:
+            key = (
+                _normalize_stock_code_for_basic(str(r.get('stock_code') or '')),
+                (r.get('action') or '').lower(),
+                round(float(r.get('price') or 0), 6),
+                round(float(r.get('quantity') or 0), 6),
+                round(float(r.get('fee') or 0), 6),
+                str(r.get('trade_date') or ''),
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
             price = float(r.get('price') or 0)
             qty = float(r.get('quantity') or 0)
             fee = float(r.get('fee') or 0)
@@ -2546,18 +3138,30 @@ def position_history_page(stock_code):
     try:
         # 查询基本交易记录
         rows = db.fetch_all(
-            '''SELECT stock_code, action, price, quantity, fee, trade_date, created_at
+            '''SELECT id, stock_code, action, price, quantity, fee, trade_date, created_at
                FROM transactions
                WHERE stock_code = %s AND user_id = %s
                ORDER BY trade_date DESC, id DESC''',
             (stock_code, uid)
         )
         records = []
+        seen_keys = set()
         total_buy_qty = 0.0
         total_sell_qty = 0.0
         total_buy_amount = 0.0
         total_sell_amount = 0.0
         for r in rows or []:
+            key = (
+                _normalize_stock_code_for_basic(str(r.get('stock_code') or '')),
+                (r.get('action') or '').lower(),
+                round(float(r.get('price') or 0), 6),
+                round(float(r.get('quantity') or 0), 6),
+                round(float(r.get('fee') or 0), 6),
+                str(r.get('trade_date') or ''),
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
             action = (r.get('action') or '').lower()
             price = float(r.get('price') or 0)
             qty = float(r.get('quantity') or 0)
@@ -2570,6 +3174,7 @@ def position_history_page(stock_code):
                 total_sell_qty += qty
                 total_sell_amount += amount
             records.append({
+                'id': r.get('id'),
                 'stock_code': r.get('stock_code'),
                 'action': action,
                 'price': price,
@@ -3912,18 +4517,27 @@ def _execute_nga_author_range_summary(
     if author_id < 1 or author_id not in watch_set:
         return {'ok': False, 'message': 'author_id 必须在本帖的关注作者列表中', 'http_status': 400}
 
-    gid_key = str(group_id or '').strip()
-    if not gid_key or gid_key == '0':
-        return {'ok': False, 'message': '未选择有效的消息群组', 'http_status': 400}
-
-    db_chk = Database.Create()
+    # 全局开关：NGA「时段总结」默认不调用 AI、不发送；仅落库供页面复制
     try:
-        db_chk.ensure_message_group_tables()
-        valid_group_ids = {str(g.get('group_id', '') or '') for g in (db_chk.get_all_message_groups() or [])}
-    finally:
-        db_chk.close()
-    if gid_key not in valid_group_ids:
-        return {'ok': False, 'message': '所选消息群组不存在', 'http_status': 400}
+        from Managers.runtime_settings import get_nga_author_summary_send_enabled
+
+        ai_send_enabled = bool(get_nga_author_summary_send_enabled())
+    except Exception:
+        ai_send_enabled = False
+
+    if ai_send_enabled:
+        gid_key = str(group_id or '').strip()
+        if not gid_key or gid_key == '0':
+            return {'ok': False, 'message': '未选择有效的消息群组', 'http_status': 400}
+
+        db_chk = Database.Create()
+        try:
+            db_chk.ensure_message_group_tables()
+            valid_group_ids = {str(g.get('group_id', '') or '') for g in (db_chk.get_all_message_groups() or [])}
+        finally:
+            db_chk.close()
+        if gid_key not in valid_group_ids:
+            return {'ok': False, 'message': '所选消息群组不存在', 'http_status': 400}
 
     if end_dt <= start_dt:
         return {'ok': False, 'message': '结束时间须晚于开始时间', 'http_status': 400}
@@ -3948,11 +4562,6 @@ def _execute_nga_author_range_summary(
     thread_name = (thread.get('name') or '').strip() or str(tid)
     ep = (extra_prompt or '').strip()
 
-    try:
-        client = GeminiClient.from_config(config)
-    except GeminiConfigError as e:
-        return {'ok': False, 'message': str(e), 'http_status': 400}
-
     prompt = _build_author_daily_summary_prompt(
         thread_name=thread_name,
         tid=tid,
@@ -3968,6 +4577,46 @@ def _execute_nga_author_range_summary(
         '你是熟悉中文网络论坛的阅读与归纳助手，输出必须使用简体中文。'
         '只依据用户提供的「时段内回复汇编」做总结，不要编造未出现的言论或事实。'
     )
+
+    # 若关闭 AI 发送：直接落库（材料/提示词），不调用 API、不发群
+    if not ai_send_enabled:
+        try:
+            cache_task_id = int(task_id) if task_id is not None else -(
+                int(tid) * 1_000_000 + int(author_id)
+            )
+            cache_text = (
+                f"[NGA·时段总结·仅落库] tid={tid} uid={author_id} "
+                f"{start_dt.strftime('%Y-%m-%d %H:%M')} ~ {end_dt.strftime('%Y-%m-%d %H:%M')}（左闭右开）\n"
+                f"{'─' * 24}\n"
+                f"【system_instruction】\n{system_instruction}\n\n"
+                f"【prompt】\n{prompt}\n"
+            )
+            db_cache = Database.Create()
+            try:
+                db_cache.upsert_nga_author_daily_summary_cache(
+                    task_id=cache_task_id,
+                    tid=int(tid),
+                    author_id=int(author_id),
+                    summary_date=end_dt.date().isoformat(),
+                    data=cache_text,
+                    http_status=0,
+                )
+            finally:
+                db_cache.close()
+        except Exception as ee:
+            logger.warning("NGA 时段总结落库失败（已忽略）: %s", ee, exc_info=True)
+            return {"ok": False, "message": f"AI 发送已关闭，但落库失败: {ee}", "http_status": 500}
+
+        return {
+            "ok": True,
+            "message": "AI 发送已关闭：已将当日总结材料写入数据库，可在「每日总结浏览」中查看/复制。",
+            "reply_count": len(entries),
+        }
+
+    try:
+        client = GeminiClient.from_config(config)
+    except GeminiConfigError as e:
+        return {'ok': False, 'message': str(e), 'http_status': 400}
 
     try:
         result = client.generate(
@@ -4684,21 +5333,33 @@ def create_nga_auto_summary_task_api(tid: int):
         rt = _normalize_hhmm(str(payload.get('run_time') or ''))
         if not rt:
             return jsonify({'success': False, 'message': 'run_time 须为 HH:MM（24 小时制）'}), 400
+        # 若全局关闭 AI 发送：允许 message_group_id 为空（落库用，不发群）
+        try:
+            from Managers.runtime_settings import get_nga_author_summary_send_enabled
+
+            ai_send_enabled = bool(get_nga_author_summary_send_enabled())
+        except Exception:
+            ai_send_enabled = False
+
         raw_gid = payload.get('message_group_id')
         if raw_gid is None or str(raw_gid).strip() in ('', '0'):
             gid = thread.get('message_group_id')
         else:
             gid = str(raw_gid).strip()
-        if gid is None or str(gid).strip() in ('', '0'):
-            return jsonify({'success': False, 'message': '未选择有效的消息群组'}), 400
-        db_chk = Database.Create()
-        try:
-            db_chk.ensure_message_group_tables()
-            valid = {str(g.get('group_id', '') or '') for g in (db_chk.get_all_message_groups() or [])}
-        finally:
-            db_chk.close()
-        if str(gid).strip() not in valid:
-            return jsonify({'success': False, 'message': '所选消息群组不存在'}), 400
+
+        if ai_send_enabled:
+            if gid is None or str(gid).strip() in ('', '0'):
+                return jsonify({'success': False, 'message': '未选择有效的消息群组'}), 400
+            db_chk = Database.Create()
+            try:
+                db_chk.ensure_message_group_tables()
+                valid = {str(g.get('group_id', '') or '') for g in (db_chk.get_all_message_groups() or [])}
+            finally:
+                db_chk.close()
+            if str(gid).strip() not in valid:
+                return jsonify({'success': False, 'message': '所选消息群组不存在'}), 400
+        else:
+            gid = str(gid or '0').strip() or '0'
         extra = (payload.get('extra_prompt') or '').strip()
         en = int(payload.get('enabled', 1) or 0)
         en = 1 if en else 0

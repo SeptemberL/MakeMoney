@@ -54,6 +54,26 @@
             gap: 10px;
         }
 
+        .user-avatar {
+            height: 34px;
+            width: 34px;
+            border-radius: 50%;
+            border: 1px solid rgba(87, 130, 255, 0.35);
+            background: rgba(16, 27, 52, 0.55);
+            color: #d9e6ff;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .user-avatar:hover {
+            background: rgba(53, 198, 255, 0.10);
+            border-color: rgba(53, 198, 255, 0.45);
+            color: #f4fbff;
+        }
+
         .sidebar-toggle {
             height: 34px;
             width: 34px;
@@ -180,6 +200,9 @@
         <a class="dsa-brand" href="/dsaweb">股票分析系统 · DSA WEB</a>
         <div class="dsa-topbar-right">
             <span style="color: var(--muted); font-size: 13px;">科技风工作台</span>
+            <div class="user-avatar" onclick="openLoginModal()" id="userAvatar" title="点击登录" aria-label="登录">
+                <i class="fas fa-user"></i>
+            </div>
             <button type="button" class="sidebar-toggle" id="sidebarToggle" title="收起/展开侧栏" aria-label="收起或展开侧栏">
                 <i class="fas fa-bars"></i>
             </button>
@@ -255,6 +278,174 @@
                     frame.src = this.dataset.src;
                     localStorage.setItem('dsaweb:last-tab', this.dataset.src);
                 });
+            });
+        })();
+    </script>
+
+    <!-- 登录模态框（DSA 顶栏入口使用） -->
+    <div class="modal fade" id="loginModal" tabindex="-1" aria-labelledby="loginModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="loginModalLabel">用户登录</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="loginForm" class="login-form">
+                        <div class="mb-3">
+                            <label for="loginUsername" class="form-label">用户名</label>
+                            <input type="text" class="form-control" id="loginUsername" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="loginPassword" class="form-label">密码</label>
+                            <input type="password" class="form-control" id="loginPassword" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100">登录</button>
+                        <div class="text-center mt-3">
+                            <a href="#" onclick="showRegisterForm(); return false;">没有账号？立即注册</a>
+                        </div>
+                    </form>
+                    <form id="registerForm" class="register-form" style="display: none;">
+                        <div class="mb-3">
+                            <label for="registerUsername" class="form-label">用户名</label>
+                            <input type="text" class="form-control" id="registerUsername" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="registerPassword" class="form-label">密码</label>
+                            <input type="password" class="form-control" id="registerPassword" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="registerEmail" class="form-label">邮箱</label>
+                            <input type="email" class="form-control" id="registerEmail">
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100">注册</button>
+                        <div class="text-center mt-3">
+                            <a href="#" onclick="showLoginForm(); return false;">已有账号？立即登录</a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        (function () {
+            let currentUser = null;
+
+            const avatarEl = () => document.getElementById('userAvatar');
+
+            function updateUserAvatar() {
+                const el = avatarEl();
+                if (!el) return;
+                el.innerHTML = '<i class="fas fa-user"></i>';
+                el.title = currentUser?.username ? currentUser.username : '点击登录';
+            }
+
+            async function fetchCurrentUser() {
+                try {
+                    const resp = await fetch('/api/user/settings');
+                    const data = await resp.json();
+                    if (data && data.success) {
+                        currentUser = {
+                            id: data.user_id,
+                            username: data.username,
+                            settings: data.settings
+                        };
+                    } else {
+                        currentUser = null;
+                    }
+                } catch (e) {
+                    currentUser = null;
+                } finally {
+                    updateUserAvatar();
+                }
+            }
+
+            window.openLoginModal = function () {
+                if (currentUser) {
+                    if (confirm('是否要退出登录？')) {
+                        fetch('/api/logout', { method: 'POST' })
+                            .then(r => r.json())
+                            .then(d => {
+                                if (d && d.success) {
+                                    currentUser = null;
+                                    updateUserAvatar();
+                                    alert('已退出登录');
+                                }
+                            })
+                            .catch(() => alert('退出失败，请重试'));
+                    }
+                    return;
+                }
+
+                const modalEl = document.getElementById('loginModal');
+                if (!modalEl) return;
+                const modal = new bootstrap.Modal(modalEl);
+                modal.show();
+            };
+
+            window.showLoginForm = function () {
+                const loginForm = document.getElementById('loginForm');
+                const registerForm = document.getElementById('registerForm');
+                if (loginForm) loginForm.style.display = 'block';
+                if (registerForm) registerForm.style.display = 'none';
+            };
+
+            window.showRegisterForm = function () {
+                const loginForm = document.getElementById('loginForm');
+                const registerForm = document.getElementById('registerForm');
+                if (loginForm) loginForm.style.display = 'none';
+                if (registerForm) registerForm.style.display = 'block';
+            };
+
+            document.getElementById('loginForm')?.addEventListener('submit', function (e) {
+                e.preventDefault();
+                const username = document.getElementById('loginUsername')?.value || '';
+                const password = document.getElementById('loginPassword')?.value || '';
+                fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                })
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d && d.success) {
+                            currentUser = d.user || { username };
+                            updateUserAvatar();
+                            bootstrap.Modal.getInstance(document.getElementById('loginModal'))?.hide();
+                            alert('登录成功！');
+                        } else {
+                            alert(d?.message || '登录失败，请重试');
+                        }
+                    })
+                    .catch(() => alert('登录失败，请重试'));
+            });
+
+            document.getElementById('registerForm')?.addEventListener('submit', function (e) {
+                e.preventDefault();
+                const username = document.getElementById('registerUsername')?.value || '';
+                const password = document.getElementById('registerPassword')?.value || '';
+                const email = document.getElementById('registerEmail')?.value || '';
+                fetch('/api/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password, email })
+                })
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d && d.success) {
+                            alert('注册成功！请登录');
+                            window.showLoginForm();
+                        } else {
+                            alert(d?.message || '注册失败，请重试');
+                        }
+                    })
+                    .catch(() => alert('注册失败，请重试'));
+            });
+
+            document.addEventListener('DOMContentLoaded', function () {
+                fetchCurrentUser();
             });
         })();
     </script>

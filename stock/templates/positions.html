@@ -98,6 +98,9 @@
       <a href="/api/positions/export_ai_txt" class="btn btn-sm btn-outline-secondary me-2" id="exportAiTxtBtn" title="导出 AI 询问用 TXT" aria-label="导出 AI 询问用 TXT">
         <i class="fas fa-file-export"></i>
       </a>
+      <a href="/api/positions/export_csv" class="btn btn-sm btn-outline-secondary me-2" id="exportCsvBtn" title="导出持仓 CSV（含汇总）" aria-label="导出持仓 CSV（含汇总）">
+        <i class="fas fa-file-csv"></i>
+      </a>
       <a href="/" class="btn btn-sm btn-outline-secondary me-2" title="回到主页">
         <i class="fas fa-home"></i>
       </a>
@@ -107,6 +110,20 @@
       <button type="button" class="btn btn-sm btn-outline-secondary ms-2" id="openTransactionsModalBtn" title="历史交易" aria-label="历史交易">
         <i class="fas fa-clock"></i>
       </button>
+    </div>
+  </div>
+  <!-- 顶部汇总栏 -->
+  <div class="excel-wrap mt-2" id="positions-summary"
+       data-available-cash="{% if portfolio %}{{ '%.2f'|format(portfolio.available_cash or 0) }}{% else %}0.00{% endif %}"
+       data-total-capital="{% if portfolio %}{{ '%.2f'|format(portfolio.total_capital or 0) }}{% else %}0.00{% endif %}">
+    <div class="d-flex flex-wrap align-items-center small" style="gap:12px;">
+      <div><strong>剩余现金</strong>：<span id="sum_available_cash" data-real="{% if summary %}{{ '%.2f'|format(summary.remaining_cash or 0) }}{% else %}0.00{% endif %}">{% if summary %}{{ '%.2f'|format(summary.remaining_cash or 0) }}{% else %}0.00{% endif %}</span></div>
+      <div><strong>总资产</strong>：<span id="sum_total_assets" data-real="{% if summary %}{{ '%.2f'|format(summary.total_assets or 0) }}{% else %}0.00{% endif %}">{% if summary %}{{ '%.2f'|format(summary.total_assets or 0) }}{% else %}0.00{% endif %}</span></div>
+      <div><strong>持仓市值</strong>：<span id="sum_market_value" data-real="{% if summary %}{{ '%.2f'|format(summary.market_value or 0) }}{% else %}0.00{% endif %}">{% if summary %}{{ '%.2f'|format(summary.market_value or 0) }}{% else %}0.00{% endif %}</span></div>
+      <div><strong>持仓占比</strong>：<span id="sum_holding_pct">{% if summary %}{{ '%.2f'|format(summary.holding_pct or 0) }}%{% else %}0.00%{% endif %}</span></div>
+      <div><strong>盈亏</strong>：<span id="sum_pnl_amt" data-real="{% if summary %}{{ '%.2f'|format(summary.pnl_amt or 0) }}{% else %}0.00{% endif %}">{% if summary %}{{ '%.2f'|format(summary.pnl_amt or 0) }}{% else %}0.00{% endif %}</span></div>
+      <div><strong>盈亏%</strong>：<span id="sum_pnl_pct">{% if summary %}{{ '%.2f'|format(summary.pnl_pct or 0) }}%{% else %}0.00%{% endif %}</span></div>
+      <div><strong>当前总盈亏%</strong>：<span id="sum_total_return_pct">{% if summary %}{{ '%.2f'|format(summary.total_return_pct or 0) }}%{% else %}0.00%{% endif %}</span></div>
     </div>
   </div>
   <div class="excel-wrap mt-3">
@@ -285,17 +302,19 @@
   </div>
 </div>
 
-<!-- 调整剩余资金（可用现金） -->
+<!-- 资金/资产设置 -->
 <div class="modal fade" id="cashModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-md modal-dialog-scrollable">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title">调整剩余资金（available_cash）</h5>
+        <h5 class="modal-title">资金/资产设置</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
       </div>
       <div class="modal-body">
         <div class="alert alert-danger d-none" id="cashModalError"></div>
         <div class="mb-2 text-muted small" id="cashModalCurrent">当前可用现金：-</div>
+        <div class="mb-2 text-muted small" id="cashModalAssets">当前总资产（现金+持仓）：-</div>
+        <div class="mb-2 text-muted small" id="cashModalCapital">初始资金（total_capital）：-</div>
         <div class="mb-2">
           <label class="form-label d-block">调整方式</label>
           <div class="btn-group" role="group">
@@ -306,9 +325,19 @@
           </div>
         </div>
         <div class="mb-3">
-          <label class="form-label">金额</label>
+          <label class="form-label">现金金额（available_cash）</label>
           <input type="number" step="0.01" class="form-control" id="cash_value" placeholder="例如：10000 或 -5000">
           <div class="form-text text-muted">“直接设置”会把 available_cash 设为该值；“增减”会在当前值基础上加/减。</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">设置初始资金（total_capital，可选）</label>
+          <input type="number" step="0.01" class="form-control" id="capital_value" placeholder="例如：300000">
+          <div class="form-text text-muted">用于计算“当前总盈亏%”：(总资产-初始资金)/初始资金。</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">设置当前总资产（可选）</label>
+          <input type="number" step="0.01" class="form-control" id="total_assets_value" placeholder="例如：280000">
+          <div class="form-text text-muted">总资产=剩余现金+持仓市值。填写后将自动反推剩余现金并保存。</div>
         </div>
       </div>
       <div class="modal-footer">
@@ -410,6 +439,8 @@
       // 只遮罩：数量、浮盈浮亏“金额”、总市值；不遮罩浮盈浮亏百分比与成本/当前价
       document.querySelectorAll('.qty-cell, .total-value-cell').forEach(applyMaskToCell);
       document.querySelectorAll('.pnl-amt').forEach(applyMaskToCell);
+      // 汇总栏遮罩：总资产/持仓市值/盈亏金额
+      document.querySelectorAll('#sum_available_cash, #sum_total_assets, #sum_market_value, #sum_pnl_amt').forEach(applyMaskToCell);
       const icon = document.getElementById('maskToggleIcon');
       if (icon) {
         icon.classList.remove('fa-eye', 'fa-eye-slash');
@@ -450,11 +481,93 @@
       else if (pnl < 0) el.classList.add('text-yellow');
     }
 
+    // ─────────────────────────── 顶部汇总栏（可随行情刷新） ───────────────────────────
+    function parseNumber(v) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    }
+
+    function getAvailableCashFromSummary() {
+      const wrap = document.getElementById('positions-summary');
+      if (!wrap) return 0;
+      return parseNumber(wrap.getAttribute('data-available-cash'));
+    }
+
+    function getTotalCapitalFromSummary() {
+      const wrap = document.getElementById('positions-summary');
+      if (!wrap) return 0;
+      return parseNumber(wrap.getAttribute('data-total-capital'));
+    }
+
+    function setSummaryNumber(id, val) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const v = Number.isFinite(val) ? val : 0;
+      const txt = v.toFixed(2);
+      el.setAttribute('data-real', txt);
+      el.textContent = isMasked ? '*****' : txt;
+      if (id === 'sum_pnl_amt') setColorByPnl(el, v);
+    }
+
+    function setSummaryPct(id, pct) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const v = Number.isFinite(pct) ? pct : 0;
+      el.textContent = v.toFixed(2) + '%';
+      if (id === 'sum_pnl_pct') setColorByPnl(el, v);
+      if (id === 'sum_total_return_pct') setColorByPnl(el, v);
+    }
+
+    function refreshSummaryFromRows() {
+      const rows = Array.from(document.querySelectorAll('tr.position-row'));
+      let mv = 0;
+      let cost = 0;
+      let pnl = 0;
+      rows.forEach(tr => {
+        const qty = parseNumber(tr.getAttribute('data-quantity') || 0);
+        const cp = parseNumber(tr.getAttribute('data-cost-price') || 0);
+        // 优先使用 data-current-price（由 updateRowByPrice 写入，最可靠）
+        let cur = parseNumber(tr.getAttribute('data-current-price'));
+        // 兜底：用总市值单元格的 data-real（不受遮罩影响）
+        if (!(cur > 0)) {
+          const totalCell = tr.querySelector('.total-value-cell');
+          const cellReal = totalCell ? (totalCell.getAttribute('data-real') || '') : '';
+          const cellMv = parseNumber(cellReal);
+          if (cellMv > 0 && qty > 0) {
+            cur = cellMv / qty;
+          }
+        }
+        if (!(cur > 0)) return;
+        mv += qty * cur;
+        cost += qty * cp;
+        pnl += (cur - cp) * qty;
+      });
+      const total = getAvailableCashFromSummary() + mv;
+      const cash = total - mv; // 剩余现金 = 总资产 - 持仓值
+      const holdingPct = total > 0 ? (mv / total * 100) : 0;
+      const pnlPct = cost > 0 ? (pnl / cost * 100) : 0;
+      const capital = getTotalCapitalFromSummary();
+      const totalReturnPct = capital > 0 ? ((total - capital) / capital * 100) : 0;
+      setSummaryNumber('sum_available_cash', cash);
+      setSummaryNumber('sum_total_assets', total);
+      setSummaryNumber('sum_market_value', mv);
+      setSummaryNumber('sum_pnl_amt', pnl);
+      setSummaryPct('sum_holding_pct', holdingPct);
+      setSummaryPct('sum_pnl_pct', pnlPct);
+      setSummaryPct('sum_total_return_pct', totalReturnPct);
+    }
+
     function updateRowByPrice(tr, curPrice) {
       if (!tr) return;
       const cp = Number(tr.getAttribute('data-cost-price') || 0);
       const qty = Number(tr.getAttribute('data-quantity') || 0);
       const pnl = (curPrice != null) ? (curPrice - cp) * qty : null;
+      // 给汇总栏使用：避免从文本解析导致持仓市值为 0
+      if (curPrice != null && Number.isFinite(curPrice)) {
+        tr.setAttribute('data-current-price', String(curPrice));
+      } else {
+        tr.removeAttribute('data-current-price');
+      }
 
       // 当前价列
       const priceCell = tr.querySelector('.current-price-cell');
@@ -602,6 +715,8 @@
             updateRowByPrice(tr, q.now);
           }
         });
+        // 行情刷新后，顺便刷新顶部汇总栏（依赖 DOM 中最新价格）
+        refreshSummaryFromRows();
       })
       .catch(() => {});
     }
@@ -617,6 +732,8 @@
       });
     }
     applyMaskAll();
+    // 初次渲染后计算一次（兼容服务端 current_price 缺失时的展示）
+    setTimeout(refreshSummaryFromRows, 50);
 
     // ─────────────────────────── 录入操作悬浮框 ───────────────────────────
     function todayISO() {
@@ -884,16 +1001,37 @@
     function openCashModal() {
       showCashError('');
       document.getElementById('cash_value').value = '';
+      document.getElementById('capital_value').value = '';
+      document.getElementById('total_assets_value').value = '';
       // 拉取当前 portfolio
       fetch('/api/portfolio')
         .then(r => r.json())
         .then(data => {
           const p = (data && data.success) ? (data.portfolio || {}) : null;
           const cur = p ? Number(p.available_cash || 0) : null;
+          const cap = p ? Number(p.total_capital || 0) : null;
+          const mv = parseNumber(document.getElementById('sum_market_value')?.getAttribute('data-real') || 0);
+          const total = (cur != null && !Number.isNaN(cur)) ? (cur + mv) : null;
           const el = document.getElementById('cashModalCurrent');
           if (el) {
             el.textContent = (cur != null && !Number.isNaN(cur)) ? ('当前可用现金：' + cur.toFixed(2)) : '当前可用现金：-';
           }
+          const elA = document.getElementById('cashModalAssets');
+          if (elA) {
+            elA.textContent = (total != null && !Number.isNaN(total)) ? ('当前总资产（现金+持仓）：' + total.toFixed(2)) : '当前总资产（现金+持仓）：-';
+          }
+          const elC = document.getElementById('cashModalCapital');
+          if (elC) {
+            elC.textContent = (cap != null && !Number.isNaN(cap)) ? ('初始资金（total_capital）：' + cap.toFixed(2)) : '初始资金（total_capital）：-';
+          }
+          const wrap = document.getElementById('positions-summary');
+          if (wrap && cur != null && !Number.isNaN(cur)) {
+            wrap.setAttribute('data-available-cash', String(cur));
+          }
+          if (wrap && cap != null && !Number.isNaN(cap)) {
+            wrap.setAttribute('data-total-capital', String(cap));
+          }
+          setTimeout(refreshSummaryFromRows, 0);
         })
         .catch(() => {});
       const modalEl = document.getElementById('cashModal');
@@ -911,21 +1049,51 @@
     if (cashSaveBtn) {
       cashSaveBtn.addEventListener('click', function() {
         showCashError('');
-        const v = Number(document.getElementById('cash_value').value);
-        if (Number.isNaN(v)) return showCashError('金额无效');
+        const vRaw = document.getElementById('cash_value').value;
+        const capitalRaw = document.getElementById('capital_value').value;
+        const totalAssetsRaw = document.getElementById('total_assets_value').value;
+
         const mode = (document.querySelector('input[name="cash_mode"]:checked') || {}).value || 'set';
+
+        // 若填写了“当前总资产”，则优先按总资产反推现金并走 set
+        let modeToSend = mode;
+        let valueToSend = null;
+        if ((totalAssetsRaw || '').trim() !== '') {
+          const ta = Number(totalAssetsRaw);
+          if (Number.isNaN(ta)) return showCashError('当前总资产无效');
+          const mv = parseNumber(document.getElementById('sum_market_value')?.getAttribute('data-real') || 0);
+          valueToSend = ta - mv; // available_cash = total_assets - 持仓市值
+          modeToSend = 'set';
+        } else {
+          const v = Number(vRaw);
+          if (Number.isNaN(v)) return showCashError('现金金额无效');
+          valueToSend = v;
+        }
+
+        let totalCapitalToSend = null;
+        if ((capitalRaw || '').trim() !== '') {
+          const cap = Number(capitalRaw);
+          if (Number.isNaN(cap)) return showCashError('初始资金无效');
+          totalCapitalToSend = cap;
+        }
         cashSaveBtn.disabled = true;
         cashSaveBtn.textContent = '保存中...';
         fetch('/api/portfolio/adjust_cash', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: mode, value: v }),
+          body: JSON.stringify({ mode: modeToSend, value: valueToSend, total_capital: totalCapitalToSend }),
         })
         .then(r => r.json().then(j => ({ ok: r.ok, j })))
         .then(({ ok, j }) => {
           if (!ok || !j || !j.success) {
             throw new Error((j && j.message) || '保存失败');
           }
+          // 更新页面的 portfolio 数据（不强制刷新页面）
+          const p = j.portfolio || {};
+          const wrap = document.getElementById('positions-summary');
+          if (wrap && p.available_cash != null) wrap.setAttribute('data-available-cash', String(p.available_cash));
+          if (wrap && p.total_capital != null) wrap.setAttribute('data-total-capital', String(p.total_capital));
+          setTimeout(refreshSummaryFromRows, 0);
           const modalEl = document.getElementById('cashModal');
           const modal = bootstrap.Modal.getInstance(modalEl);
           if (modal) modal.hide();

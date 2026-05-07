@@ -151,6 +151,18 @@ def get_signal_missing_adj_factor_policy() -> str:
     return "skip"
 
 
+def get_nga_author_summary_send_enabled() -> bool:
+    """
+    NGA 关注作者「时段总结」是否调用 AI 并发送到群组。
+    配置：DB 或 config.ini
+    - [NGA_AI] author_summary_send_enabled = 1 / true / yes / on
+    默认关闭（0）。
+    """
+    raw = get_setting("NGA_AI", "author_summary_send_enabled", "0")
+    v = str(raw or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
 def get_all_settings_merged(defaults: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """按 defaults 的键集返回 DB 优先的配置快照。"""
     out: Dict[str, Dict[str, Any]] = {}

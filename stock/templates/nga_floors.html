@@ -373,9 +373,13 @@
                 alert('请选择关注作者');
                 return;
             }
-            if (!gid || gid === '0') {
-                alert('请选择消息群组');
-                return;
+            if (!!window.__ngaAuthorSummarySendEnabled) {
+                if (!gid || gid === '0') {
+                    alert('请选择消息群组');
+                    return;
+                }
+            } else {
+                gid = '0';
             }
             if (!rt) {
                 alert('请选择每日执行时间');
@@ -392,7 +396,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     author_id: parseInt(authorId, 10),
-                    message_group_id: gid,
+                    message_group_id: gid || '0',
                     run_time: rt,
                     extra_prompt: extra,
                     enabled: 1
@@ -437,6 +441,21 @@
         function openAuthorDaySummaryModal() {
             if (!authorDaySummaryModal) return;
             loadNgaAutoSummaryTasks();
+            // 读取全局开关：NGA 时段总结是否调用 AI 并发送
+            fetch('/api/nga_ai_settings')
+                .then(function(r) { return r.json(); })
+                .then(function(s) {
+                    window.__ngaAuthorSummarySendEnabled = !!(s && s.success && s.author_summary_send_enabled);
+                    var cb = document.getElementById('authorSummarySendEnabled');
+                    if (cb) cb.checked = !!window.__ngaAuthorSummarySendEnabled;
+                    refreshAuthorSummarySendUi();
+                })
+                .catch(function() {
+                    window.__ngaAuthorSummarySendEnabled = false;
+                    var cb = document.getElementById('authorSummarySendEnabled');
+                    if (cb) cb.checked = false;
+                    refreshAuthorSummarySendUi();
+                });
             var af = document.getElementById('authorFilter');
             var sa = document.getElementById('summaryAuthorSelect');
             if (sa && af && af.value) {
@@ -463,6 +482,7 @@
                     sel.disabled = false;
                     if (!data.success || !data.groups || !data.groups.length) {
                         sel.innerHTML = '<option value="0">（无可用消息群组）</option>';
+                        refreshAuthorSummarySendUi();
                         authorDaySummaryModal.show();
                         return;
                     }
@@ -483,13 +503,53 @@
                     if (!sel.value && sel.options.length) {
                         sel.selectedIndex = 0;
                     }
+                    refreshAuthorSummarySendUi();
                     authorDaySummaryModal.show();
                 })
                 .catch(function() {
                     sel.disabled = false;
                     sel.innerHTML = '<option value="0">加载失败</option>';
+                    refreshAuthorSummarySendUi();
                     authorDaySummaryModal.show();
                 });
+        }
+
+        function refreshAuthorSummarySendUi() {
+            var enabled = !!window.__ngaAuthorSummarySendEnabled;
+            var hint = document.getElementById('authorSummarySendHint');
+            var gid = document.getElementById('summaryMessageGroup');
+            var btn = document.getElementById('btnAuthorDaySummarySubmit');
+            if (hint) {
+                hint.textContent = enabled
+                    ? '将调用 Gemini 生成总结并发送到所选消息群组。'
+                    : 'AI 发送已关闭：本次仅落库，可在「每日总结浏览」里复制后手动发给 AI。';
+            }
+            if (gid) {
+                gid.disabled = !enabled;
+            }
+            if (btn) {
+                btn.textContent = enabled ? '生成总结并发送' : '生成材料并落库';
+            }
+        }
+
+        function saveAuthorSummarySendEnabled() {
+            var cb = document.getElementById('authorSummarySendEnabled');
+            if (!cb) return;
+            var enabled = !!cb.checked;
+            window.__ngaAuthorSummarySendEnabled = enabled;
+            refreshAuthorSummarySendUi();
+            fetch('/api/nga_ai_settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ author_summary_send_enabled: enabled })
+            })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    if (!d || !d.success) {
+                        alert((d && d.message) ? d.message : '保存开关失败');
+                    }
+                })
+                .catch(function() { alert('保存开关失败'); });
         }
 
         function submitAuthorDaySummary() {
@@ -510,9 +570,13 @@
                 alert('结束时间须晚于开始时间');
                 return;
             }
-            if (!gid || gid === '0') {
-                alert('请选择一个消息群组');
-                return;
+            if (!!window.__ngaAuthorSummarySendEnabled) {
+                if (!gid || gid === '0') {
+                    alert('请选择一个消息群组');
+                    return;
+                }
+            } else {
+                gid = '0';
             }
             var btn = document.getElementById('btnAuthorDaySummarySubmit');
             var oldText = btn.textContent;
@@ -755,7 +819,7 @@
                     var items = data.items || [];
                     if (!items.length) {
                         document.getElementById('dailySummaryList').innerHTML =
-                            '<div class="text-muted small">暂无缓存记录（只有命中 429 时才会写入）</div>';
+                            '<div class="text-muted small">暂无缓存记录（命中 429 或关闭 AI 发送时会写入）</div>';
                         return;
                     }
                     var html = '<div class="list-group">';
@@ -847,12 +911,12 @@
         }
     </script>
 
-    <!-- 每日总结浏览弹窗（429 回退缓存） -->
+    <!-- 每日总结浏览弹窗（落库记录） -->
     <div class="modal fade" id="dailySummaryBrowserModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-xl modal-dialog-scrollable">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">每日总结浏览（429 回退缓存）</h5>
+                    <h5 class="modal-title">每日总结浏览（落库记录）</h5>
                     <div class="d-flex align-items-center gap-2">
                         <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyDailySummaryToClipboard()">
                             复制当日总结
@@ -988,7 +1052,18 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
                 </div>
                 <div class="modal-body">
-                    <p class="text-muted small">将所选<strong>时间段</strong>内（含起始时刻、不含结束时刻）、该作者在本帖已抓取的回复合并后交给 Gemini 做综合总结，并发送到下方所选消息群组。打开弹窗时默认：<strong>前一天 16:00</strong> 至 <strong>当天 16:00</strong>。</p>
+                    <p class="text-muted small mb-2">
+                        将所选<strong>时间段</strong>内（含起始时刻、不含结束时刻）、该作者在本帖已抓取的回复合并为材料。
+                        <span id="authorSummarySendHint">加载中…</span>
+                        打开弹窗时默认：<strong>前一天 16:00</strong> 至 <strong>当天 16:00</strong>。
+                    </p>
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="authorSummarySendEnabled" style="cursor:pointer;" onchange="saveAuthorSummarySendEnabled()">
+                        <label class="form-check-label" for="authorSummarySendEnabled" style="cursor:pointer;">
+                            调用 AI 生成总结并发送到群组（关闭则仅落库）
+                        </label>
+                        <div class="form-text">该开关为全局设置：影响本页面的手动时段总结与每日自动总结。</div>
+                    </div>
                     <div class="mb-3">
                         <label for="summaryAuthorSelect" class="form-label">关注作者</label>
                         <select class="form-select" id="summaryAuthorSelect">
@@ -1025,7 +1100,7 @@
                     </div>
                     <hr class="my-3" />
                     <h6 class="mb-2">每日自动总结</h6>
-                    <p class="small text-muted mb-2">勾选并设置时间后点「保存自动任务」：服务器将在<strong>每个自然日</strong>的该时刻，用<strong>默认时段</strong>（昨天 16:00～今天 16:00，左闭右开）对下方所选<strong>关注作者 UID</strong>执行一次时段总结，并发送到所选消息群组（与上面手动「生成总结并发送」相同逻辑）。</p>
+                    <p class="small text-muted mb-2">勾选并设置时间后点「保存自动任务」：服务器将在<strong>每个自然日</strong>的该时刻，用<strong>默认时段</strong>（昨天 16:00～今天 16:00，左闭右开）对下方所选<strong>关注作者 UID</strong>执行一次时段总结；若上方「调用 AI 并发送」开启则发送到群组，否则仅落库供复制。</p>
                     <div class="form-check mb-2">
                         <input class="form-check-input" type="checkbox" id="summaryAutoDailyEnabled" />
                         <label class="form-check-label" for="summaryAutoDailyEnabled">启用每日自动总结（保存时生效）</label>
